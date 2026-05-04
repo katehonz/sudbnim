@@ -1,1 +1,5 @@
 surrealdb-go
+tests/test_integration
+tests/test_mock
+tests/test_reconnect
+tests/test_unit

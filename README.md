@@ -11,7 +11,9 @@ Built with zero external dependencies — only `nim >= 2.0.0` required.
 - **Auto-reconnect with retry** — `ReconnectingDb` wraps `Db` with exponential backoff and session state restoration (inspired by `rews` from the Go driver)
 - **Compile-time literals** — `rc"users:123"` for RecordId, `tb"users"` for tables, `surql"SELECT ..."` for queries
 - **Typed results** — `SurrealResult[T]` with `isOk`/`ok`/`error` pattern
-- **Live queries** — `live`/`kill` with notification support
+- **Live queries** — `live`/`kill` with real-time notification handlers
+- **Transactions** — `begin`/`commit`/`cancel` for interactive transactions
+- **Structured errors** — parse SurrealDB v3 error chains with `kind`, `details`, and `cause`
 - **Session persistence** — token, namespace, database, and variables survive reconnection
 
 ## Installation
@@ -163,7 +165,17 @@ waitFor main()
 | Method | Description |
 |---|---|
 | `db.live(table, diff = false)` | Start a live query |
+| `db.onNotification(liveId, handler)` | Register a notification callback |
+| `db.offNotification(liveId)` | Unregister a notification callback |
 | `db.kill(liveId)` | Kill a live query |
+
+### Transactions
+
+| Method | Description |
+|---|---|
+| `db.begin()` | Start a transaction |
+| `db.commit()` | Commit a transaction |
+| `db.cancel()` | Rollback a transaction |
 
 ### Variables & Functions
 
@@ -198,8 +210,9 @@ type SurrealResult[T] = object
 
 ```nim
 type RpcError = object
-  code: int          # JSON-RPC error code
-  message: string    # Error message
+  code: int           # JSON-RPC error code
+  message: string     # Error message
+  serverError: ServerError  # Structured v3 error with kind/details/cause
 ```
 
 **Query result format** — SurrealDB 3.0 wraps query results:
@@ -234,17 +247,19 @@ newReconnectingDb(url)   # retryer = nil
 
 ## Testing
 
-Tests require a running SurrealDB instance:
-
 ```bash
-# Start SurrealDB
-docker run -d --name surrealdb -p 8080:8000 surrealdb/surrealdb:latest \
-  start --user root --pass root --allow-all
-
-# Run all tests
+# Run all tests (unit + mock + integration + reconnect)
 nimble test
 
-# Or individually
+# Unit tests (no SurrealDB needed)
+nim c -r --hints:off --path:src tests/test_unit.nim
+
+# Mock server tests (no SurrealDB needed)
+nim c -r --hints:off --path:src tests/test_mock.nim
+
+# Integration tests (require running SurrealDB)
+docker run -d --name surrealdb -p 8080:8000 surrealdb/surrealdb:latest \
+  start --user root --pass root --allow-all
 nim c -r --hints:off --path:src tests/test_integration.nim
 nim c -r --hints:off --path:src tests/test_reconnect.nim
 ```
