@@ -26,24 +26,24 @@
 - queryRaw с error extraction за ERR statements
 - isRetriable/isQueryError helpers
 - ReconnectingDb: signinWithRefresh, signupWithRefresh, patch(RecordId)
-- 115 теста (58 unit + 33 mock + 3 typed + 21 CBOR)
+- Send[T] public generic RPC с method whitelist (13 метода)
+- 127 теста (58 unit + 33 mock + 6 typed + 21 CBOR + 9 CBOR codec)
 
 ### ⚠️ Частично направено (Phase 5)
 - ✅ CBOR codec чрез cborious библиотека (surrealcbor.nim)
 - ✅ CBOR encode/decode за JsonNode (primitives, arrays, maps, null, bool, int, float, string)
 - ✅ SurrealDB CBOR tag константи (Tags 6-94)
 - ✅ Codec abstraction (JSON vs CBOR) — codec.nim
-- ✅ CBOR roundtrip тестове (21 теста)
-- 🔲 CBOR tag dispatch за SurrealDB типове (encode SurrealDB types → tagged CBOR)
-- 🔲 WebSocket binary frame integration (wsBinary opcode)
-- 🔲 Connection.nim CBOR mode integration
+- ✅ WebSocket binary frame integration (wsBinary opcode в connection.nim)
+- ✅ Connection.nim CBOR mode — Db.codec field, connect(url, codec)
+- ✅ CBOR RPC request/response roundtrip
+- ✅ 30 CBOR теста
+- 🔲 SurrealDB type → tagged CBOR encoding (RecordId → tag 8, UUID → tag 37)
 - 🔲 Two-phase CBOR unmarshal за typed wrappers
 
 ### ❌ Оставащо (сравнено с Go драйвъра)
 - CBOR SurrealDB type encoding (RecordId → tag 8, UUID → tag 37 и т.н.)
-- WebSocket binary frame integration
-- LiveNotifications/CloseLiveNotifications канал на Session (Nim ползва callbacks)
-- Send[T] public generic с method whitelist
+- LiveNotifications/CloseLiveNotifications на Session
 - HTTP connection backend (Nim е WebSocket-only)
 
 ---

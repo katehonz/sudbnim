@@ -593,3 +593,36 @@ proc insertRelation*[T](tx: Transaction, table: string, content: JsonNode, _: ty
     result = ok(jsonTo(raw.ok, T))
   except CatchableError as e:
     result = err[T](-1, "unmarshal error: " & e.msg)
+
+# --- Public generic Send[T] ---
+
+const allowedSendMethods* = [
+  "select", "create", "insert", "insert_relation",
+  "kill", "live", "merge", "relate", "update", "upsert",
+  "patch", "delete", "query",
+]
+
+proc send*[T](db: Db, rpcMethod: string, params: JsonNode, _: typedesc[T]): Future[SurrealResult[T]] {.async.} =
+  ## Low-level generic RPC call with method whitelist checking.
+  ## Only methods listed in allowedSendMethods are permitted.
+  ## Returns typed SurrealResult[T] by unmarshaling the JSON response.
+  if not allowedSendMethods.contains(rpcMethod.toLowerAscii()):
+    return err[T](-1, "method not allowed in Send: " & rpcMethod)
+  let raw = await connection.send(db, rpcMethod, params)
+  if not raw.isOk:
+    return err[T](raw.error.code, raw.error.message, raw.error.serverError)
+  try:
+    result = ok(jsonTo(raw.ok, T))
+  except CatchableError as e:
+    result = err[T](-1, "unmarshal error: " & e.msg)
+
+proc send*[T](s: Session, rpcMethod: string, params: JsonNode, _: typedesc[T]): Future[SurrealResult[T]] {.async.} =
+  if not allowedSendMethods.contains(rpcMethod.toLowerAscii()):
+    return err[T](-1, "method not allowed in Send: " & rpcMethod)
+  let raw = await connection.ssend(s, rpcMethod, params)
+  if not raw.isOk:
+    return err[T](raw.error.code, raw.error.message, raw.error.serverError)
+  try:
+    result = ok(jsonTo(raw.ok, T))
+  except CatchableError as e:
+    result = err[T](-1, "unmarshal error: " & e.msg)
