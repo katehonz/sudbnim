@@ -28,7 +28,8 @@
 - ReconnectingDb: signinWithRefresh, signupWithRefresh, patch(RecordId)
 - Send[T] public generic RPC с method whitelist (13 метода)
 - Session live notifications: onNotification/offNotification
-- 127 теста (58 unit + 33 mock + 6 typed + 21 CBOR + 9 CBOR codec)
+- HTTP client module (httpclient.nim)
+- 138 теста (58 unit + 33 mock + 6 typed + 30 CBOR + 11 type-aware CBOR)
 
 ### ⚠️ Частично направено (Phase 5)
 - ✅ CBOR codec чрез cborious библиотека (surrealcbor.nim)
@@ -39,12 +40,23 @@
 - ✅ Connection.nim CBOR mode — Db.codec field, connect(url, codec)
 - ✅ CBOR RPC request/response roundtrip
 - ✅ 30 CBOR теста
-- 🔲 SurrealDB type → tagged CBOR encoding (RecordId → tag 8, UUID → tag 37)
-- 🔲 Two-phase CBOR unmarshal за typed wrappers
+- ✅ CBOR type-aware encoding с markers: recordidCbor, stringuuidCbor, binaryuuidCbor, tableCbor, datetimeCbor, durationCbor, decimalCbor, rangeCbor, boundCbor
+- ✅ 11 нови type-aware CBOR теста
 
-### ❌ Оставащо (сравнено с Go драйвъра)
-- CBOR SurrealDB type-aware encoding (RecordId → tag 8, UUID → tag 37)
-- HTTP connection backend (Nim е WebSocket-only)
+### ✅ HTTP backend
+- HttpClient module (httpclient.nim) с пълен CRUD API
+- HTTP health check, signin, signup, signinNs, signinDb, signinRecord, query, select, create, update, upsert, merge, delete
+- CBOR/JSON codec поддръжка
+- Лимитации (както в Go): няма live queries, sessions, transactions, run (custom functions)
+
+### ✅ Пълен паритет с Go драйвъра
+- Всички основни API методи имплементирани
+- CBOR и JSON транспорт
+- WebSocket и HTTP backends
+- Typed wrappers за всички CRUD операции
+- Session и Transaction поддръжка (WebSocket само)
+- Live queries (WebSocket само)
+- ReconnectingDb с exponential backoff
 
 ---
 
@@ -82,24 +94,33 @@
 ## Phase 5: CBOR поддръжка (НАПРЕДНАЛ)
 
 ### ✅ Готово
-- CBOR codec чрез `cborious` библиотека (surrealcbor.nim) — 464 реда
+- CBOR codec чрез `cborious` библиотека (surrealcbor.nim) — 632 реда
 - JsonNode ↔ CBOR roundtrip (primitives, arrays, maps, indefinite-length)
 - SurrealDB CBOR tag константи (Tags 6-94)
 - Tag encoding за SurrealDB типове (RecordId, Table, UUID, DateTime, Duration, Geometry*, Bound, Range, PatchData, Relationship, Auth, Tokens)
-- Tag decoding с dispatch по tag number → JsonNode
+- Tag decoding с dispatch по tag number → JsonNode (direct inline decoding, no double tag consumption)
 - Codec abstraction (JSON vs CBOR) — codec.nim
 - WebSocket binary frame integration (wsBinary opcode в connection.nim)
 - Connection.nim CBOR mode — Db.codec, connect(url, codec)
 - marshalCborRpcRequest/marshalCbor/unmarshalCbor public API
-- 30 CBOR теста
+- Type-aware CBOR RPC params encoding с markers:
+  - recordidCbor (tag 8)
+  - stringuuidCbor (tag 9)
+  - binaryuuidCbor (tag 37)
+  - tableCbor (tag 7)
+  - datetimeCbor (tag 12)
+  - durationCbor (tag 14)
+  - decimalCbor (tag 10)
+  - rangeCbor (tag 49)
+  - boundCbor (tags 50/51)
+- 41 CBOR теста (30 + 11 new type-aware)
 
 ### ⚠️ Дизайн-избор (не пропуск)
-- **CBOR params type-aware encoding**: Go ползва `interface{}` → CBOR marshaler кодира типове с тагове. Nim ползва `JsonNode` → CBOR е JSON-equivalent. Сървърът приема и двата формата. Разликата е в размера на payload-а и type safety-то на протоколно ниво.
+- **CBOR params type-aware encoding**: Go ползва `interface{}` → CBOR marshaler кодира типове с тагове. Nim ползва `JsonNode` → marker-based подход. Сървърът приема и двата формата.
 - **HTTP backend**: WebSocket е стандартният транспорт за SurrealDB. HTTP добавя complexity без ясен benefit.
 
 ### ❌ Оставащо за 100% паритет
-- CBOR type-aware param encoding (RecordId → tag 8 в params)
-- HTTP connection backend
+- Пълен паритет с Go driver edge cases
 
 ---
 

@@ -263,9 +263,46 @@ Returns `true` if the underlying `Db` is connected.
 
 ---
 
+## HTTP Connection API
+
+HTTP transport provides an alternative to WebSocket. Use HTTP when you don't need live queries, sessions, or transactions.
+
+### `newHttpClient`
+
+```nim
+proc newHttpClient*(url: string, codec: Codec = nil): HttpClient
+```
+
+Creates an HTTP connection to SurrealDB.
+
+- **Parameters:**
+  - `url` — HTTP URL (e.g., `http://localhost:8000`). `/` appended automatically if missing.
+  - `codec` — Optional codec (`newJsonCodec()` or `newCborCodec()`). Defaults to JSON.
+- **Returns:** `HttpClient` connection object.
+
+### `health` — HTTP
+
+```nim
+proc health*(c: HttpClient): Future[bool]
+```
+
+Check if the SurrealDB server is healthy.
+
+### `close` — HTTP
+
+```nim
+proc close*(c: HttpClient)
+```
+
+Closes the HTTP client.
+
+**HTTP limitations:** Live queries, sessions, transactions, and `run()` are not supported via HTTP. Use WebSocket for these features.
+
+---
+
 ## RPC Methods
 
-All methods are available on both `Db` and `ReconnectingDb`.
+All methods are available on `Db`, `ReconnectingDb`, and `HttpClient` (except where noted).
 
 ### Connection & Session
 
@@ -674,3 +711,71 @@ Returns `true` if the error is potentially transient (network, timeout, server o
 proc isQueryError*(err: RpcError): bool
 ```
 Returns `true` if this is a query-level error (syntax, type, or logic bug). These should **not** be retried.
+
+---
+
+## CBOR Transport
+
+CBOR provides binary encoding for more compact payloads. Use with WebSocket connections.
+
+### Codec Types
+
+```nim
+type
+  CodecKind* = enum
+    ckJson = "json"
+    ckCbor = "cbor"
+
+  Codec* = ref object
+    kind*: CodecKind
+
+proc newJsonCodec*(): Codec
+proc newCborCodec*(): Codec
+```
+
+### Using CBOR
+
+```nim
+import surrealdb
+
+# WebSocket with CBOR
+let db = await connect("ws://localhost:8000", codec = newCborCodec())
+
+# HTTP with CBOR
+let http = newHttpClient("http://localhost:8000", codec = newCborCodec())
+```
+
+### Type-Aware CBOR Encoding
+
+For explicit type encoding in CBOR params, use marker helpers:
+
+```nim
+import surrealdb/private/surrealcbor
+
+# RecordId with tag 8
+let rid = recordidCbor("user", "alice")
+
+# UUID with tag 9 (string) or tag 37 (binary)
+let uuid = stringuuidCbor("0191d530-3af8-7000-8b57-9f6707ab6c05")
+let uuidHex = binaryuuidCbor("0191d5303af870008b579f6707ab6c05")
+
+# Table with tag 7
+let tbl = tableCbor("users")
+
+# DateTime with tag 12
+let dt = datetimeCbor("2025-01-15T10:30:00Z")
+
+# Duration with tag 14
+let dur = durationCbor("1h30m")
+
+# Decimal with tag 10
+let dec = decimalCbor("3.14159")
+
+# Range with tag 49
+let rng = rangeCbor(beginMarker, endMarker)
+
+# Bound with tag 50 (included) or 51 (excluded)
+let bound = boundCbor("incl", innerValue)
+```
+
+These markers are used internally when encoding typed wrappers and can be used directly for explicit type encoding.

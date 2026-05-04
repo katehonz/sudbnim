@@ -7,6 +7,8 @@ Built with zero external dependencies — only `nim >= 2.0.0` required.
 ## Features
 
 - **JSON-RPC 2.0 over WebSocket** — native WebSocket client with ping/pong keep-alive
+- **HTTP Transport** — alternative to WebSocket using HTTP/1.1
+- **CBOR Transport** — binary CBOR encoding for compact payloads (WebSocket only)
 - **28 RPC methods** — use, signin, signup, query, select, create, insert, update, upsert, merge, patch, delete, relate, live, kill, run, and more
 - **Auto-reconnect with retry** — `ReconnectingDb` wraps `Db` with exponential backoff and session state restoration (inspired by `rews` from the Go driver)
 - **Compile-time literals** — `rc"users:123"` for RecordId, `tb"users"` for tables, `surql"SELECT ..."` for queries
@@ -15,6 +17,7 @@ Built with zero external dependencies — only `nim >= 2.0.0` required.
 - **Transactions** — `begin`/`commit`/`cancel` for interactive transactions
 - **Structured errors** — parse SurrealDB v3 error chains with `kind`, `details`, and `cause`
 - **Session persistence** — token, namespace, database, and variables survive reconnection
+- **Type-aware CBOR encoding** — markers for RecordId, UUID, Table, DateTime, Duration, Decimal, Range, Bound
 
 ## Installation
 
@@ -35,9 +38,13 @@ import std/[json, asyncdispatch]
 import surrealdb
 
 proc main() {.async.} =
-  # Connect to SurrealDB
+  # Connect to SurrealDB via WebSocket (default)
   let db = await connect("ws://localhost:8000/rpc")
   defer: db.disconnect()
+
+  # Or via HTTP
+  let http = newHttpClient("http://localhost:8000")
+  defer: http.close()
 
   # Select namespace and database
   discard await db.use("test", "test")
@@ -114,11 +121,16 @@ waitFor main()
 | Method | Description |
 |---|---|
 | `connect(url)` → `Db` | Open a WebSocket connection |
+| `connect(url, codec)` → `Db` | Open with CBOR codec |
+| `newHttpClient(url)` → `HttpClient` | Open HTTP connection |
+| `newHttpClient(url, codec)` → `HttpClient` | Open with CBOR/JSON codec |
 | `db.disconnect()` | Close the connection |
 | `db.isConnected()` → `bool` | Check connection state |
 | `newReconnectingDb(url, retryer)` → `ReconnectingDb` | Create reconnecting connection |
 | `rdb.start()` | Connect + start reconnection loop |
 | `rdb.disconnect()` | Close and stop reconnecting |
+
+**HTTP client limitations:** Live queries, sessions, transactions, and `run()` are not supported via HTTP (use WebSocket for these features).
 
 ### Authentication
 
@@ -310,12 +322,16 @@ src/surrealdb/
     ├── types.nim                    # All types: RecordId, Db, Result, Retryer, etc.
     ├── websocket.nim                # Zero-dependency WebSocket client (RFC 6455)
     ├── connection.nim               # Db + Session + Transaction + all RPC methods
-    └── reconnect.nim               # ReconnectingDb with retry + session restore
+    ├── reconnect.nim               # ReconnectingDb with retry + session restore
+    ├── codec.nim                   # JSON/CBOR codec abstraction
+    ├── surrealcbor.nim             # CBOR encoding/decoding with SurrealDB tags
+    └── httpclient.nim              # HTTP transport client
 ```
 
 **Design decisions:**
 - **No external dependencies** — custom WebSocket implementation removes the need for `ws` or `websocket` libraries
 - **JSON-RPC 2.0** — SurrealDB 3.0 uses JSON over WebSocket (not CBOR), simpler and more debuggable
+- **CBOR transport** — optional binary encoding via `connect(url, newCborCodec())` for compact payloads
 - **Async native** — built on Nim's `asyncdispatch` (single-threaded event loop)
 - **Method dispatch for Retryer** — allows extensible retry strategies via Nim's method system
 - **Request/response correlation** — random 16-char base62 IDs map requests to `Future` completions

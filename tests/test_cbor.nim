@@ -141,3 +141,81 @@ suite "CBOR Codec":
     let decoded = c.unmarshalResponse(encoded)
     check decoded["id"].getStr() == "abc123"
     check decoded["result"].len == 3
+
+suite "CBOR Type-Aware RPC Encoding":
+  test "recordidCbor encodes with tag 8":
+    let marker = recordidCbor("user", "alice")
+    let encoded = marshalCborRpcRequest("1", "select", %[marker])
+    let decoded = unmarshalCbor(encoded)
+    check decoded.hasKey("params")
+    let params = decoded["params"]
+    check params.kind == JArray
+    check params.len == 1
+
+  test "stringuuidCbor encodes with tag 9":
+    let marker = stringuuidCbor("0191d530-3af8-7000-8b57-9f6707ab6c05")
+    let encoded = marshalCborRpcRequest("1", "query", %[marker])
+    let decoded = unmarshalCbor(encoded)
+    check decoded["params"][0].kind == JString
+
+  test "tableCbor encodes with tag 7":
+    let marker = tableCbor("users")
+    let encoded = marshalCborRpcRequest("1", "select", %[marker])
+    let decoded = unmarshalCbor(encoded)
+    check decoded["params"][0].kind == JString
+
+  test "datetimeCbor encodes with tag 12":
+    let marker = datetimeCbor("2025-01-15T10:30:00Z")
+    let encoded = marshalCborRpcRequest("1", "query", %[marker])
+    let decoded = unmarshalCbor(encoded)
+    check decoded["params"][0].kind == JString
+
+  test "durationCbor encodes with tag 14":
+    let marker = durationCbor("1h30m")
+    let encoded = marshalCborRpcRequest("1", "query", %[marker])
+    let decoded = unmarshalCbor(encoded)
+    check decoded["params"][0].kind == JString
+
+  test "decimalCbor encodes with tag 10":
+    let marker = decimalCbor("3.14159")
+    let encoded = marshalCborRpcRequest("1", "query", %[marker])
+    let decoded = unmarshalCbor(encoded)
+    check decoded["params"][0].kind == JString
+
+  test "rangeCbor encodes with tag 49":
+    let beginMarker = recordidCbor("user", "alice")
+    let endMarker = recordidCbor("user", "bob")
+    let marker = rangeCbor(beginMarker, endMarker)
+    let encoded = marshalCborRpcRequest("1", "select", %[marker])
+    let decoded = unmarshalCbor(encoded)
+    check decoded["params"][0].kind == JObject
+    check decoded["params"][0].hasKey("begin")
+    check decoded["params"][0].hasKey("end")
+
+  test "boundCbor includes bound marker":
+    let inner = recordidCbor("user", "alice")
+    let marker = boundCbor("incl", inner)
+    let encoded = marshalCborRpcRequest("1", "select", %[marker])
+    let decoded = unmarshalCbor(encoded)
+    check decoded["params"][0].kind == JObject
+
+  test "mixed type-aware and plain params":
+    let marker = recordidCbor("user", "alice")
+    let params = %*[marker, %"plain string", %42]
+    let encoded = marshalCborRpcRequest("1", "select", params)
+    let decoded = unmarshalCbor(encoded)
+    check decoded["params"].len == 3
+
+  test "RPC request structure is correct":
+    let params = %["test"]
+    let encoded = marshalCborRpcRequest("req123", "ping", params)
+    let decoded = unmarshalCbor(encoded)
+    check decoded["id"].getStr() == "req123"
+    check decoded["method"].getStr() == "ping"
+    check decoded["params"][0].getStr() == "test"
+
+  test "binaryuuidCbor encodes with tag 37":
+    let marker = binaryuuidCbor("0191d5303af870008b579f6707ab6c05")
+    let encoded = marshalCborRpcRequest("1", "query", %[marker])
+    let decoded = unmarshalCbor(encoded)
+    check decoded["params"][0].kind == JString

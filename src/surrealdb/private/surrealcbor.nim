@@ -346,23 +346,33 @@ proc cborUnpackSurrealValue*(s: CborStream): JsonNode =
   of CborMajor.Tag:
     let tagNum = s.readAddInfo(ai)
     case tagNum
-    of TagNone:
-      result = s.cborUnpackNone()
-    of TagTable:
-      result = %($s.cborUnpackTable())
     of TagRecordID:
-      let rid = s.cborUnpackRecordId()
-      result = %*{"tb": rid.table, "id": rid.id}
+      var parts: seq[string]
+      s.cborUnpack(parts)
+      if parts.len >= 2:
+        result = %*{"tb": parts[0], "id": %*parts[1]}
+      else:
+        result = newJNull()
     of TagStringUUID:
-      result = %($s.cborUnpackStringUUID())
+      var val: string
+      s.cborUnpack(val)
+      result = %val
     of TagStringDecimal:
-      result = %($s.cborUnpackStringDecimal())
+      var val: string
+      s.cborUnpack(val)
+      result = %val
     of TagCustomDatetime:
-      result = %($s.cborUnpackDatetime())
+      var val: string
+      s.cborUnpack(val)
+      result = %val
     of TagStringDuration:
-      result = %($s.cborUnpackStringDuration())
+      var val: string
+      s.cborUnpack(val)
+      result = %val
     of TagFuture:
-      result = %($s.cborUnpackFuture())
+      var val: string
+      s.cborUnpack(val)
+      result = %val
     of TagSpecBinaryUUID:
       var bytes: seq[byte]
       s.cborUnpack(bytes)
@@ -376,25 +386,74 @@ proc cborUnpackSurrealValue*(s: CborStream): JsonNode =
     of TagBoundExcluded:
       result = %*{"excl": s.cborUnpackSurrealValue()}
     of TagGeometryPoint:
-      let gp = s.cborUnpackGeometryPoint()
-      result = %*{"type": "Point", "coordinates": [gp.longitude, gp.latitude]}
+      var coords: seq[float64]
+      s.cborUnpack(coords)
+      if coords.len >= 2:
+        result = %*{"type": "Point", "coordinates": [coords[0], coords[1]]}
+      else:
+        result = newJNull()
     of TagGeometryLine:
-      let gl = s.cborUnpackGeometryLine()
+      var coords: seq[seq[float64]]
+      s.cborUnpack(coords)
+      var gl: GeometryLine
+      for c in coords:
+        if c.len >= 2:
+          gl.add(GeometryPoint(longitude: c[0], latitude: c[1]))
       result = %*{"type": "LineString", "coordinates": gl.mapIt([it.longitude, it.latitude])}
     of TagGeometryPolygon:
-      let gp = s.cborUnpackGeometryPolygon()
+      var rings: seq[seq[seq[float64]]]
+      s.cborUnpack(rings)
+      var gp: GeometryPolygon
+      for ring in rings:
+        var line: GeometryLine
+        for c in ring:
+          if c.len >= 2:
+            line.add(GeometryPoint(longitude: c[0], latitude: c[1]))
+        gp.add(line)
       result = %*{"type": "Polygon", "coordinates": gp.mapIt(it.mapIt([it.longitude, it.latitude]))}
     of TagGeometryMultiPoint:
-      let gm = s.cborUnpackGeometryMultiPoint()
-      result = %*{"type": "MultiPoint", "coordinates": seq[GeometryPoint](gm).mapIt([it.longitude, it.latitude])}
+      var coords: seq[seq[float64]]
+      s.cborUnpack(coords)
+      var points: seq[GeometryPoint]
+      for c in coords:
+        if c.len >= 2:
+          points.add(GeometryPoint(longitude: c[0], latitude: c[1]))
+      result = %*{"type": "MultiPoint", "coordinates": points.mapIt([it.longitude, it.latitude])}
     of TagGeometryMultiLine:
-      let gm = s.cborUnpackGeometryMultiLine()
-      result = %*{"type": "MultiLineString", "coordinates": seq[GeometryLine](gm).mapIt(it.mapIt([it.longitude, it.latitude]))}
+      var lines: seq[seq[seq[float64]]]
+      s.cborUnpack(lines)
+      var gLines: seq[GeometryLine]
+      for line in lines:
+        var gl: GeometryLine
+        for c in line:
+          if c.len >= 2:
+            gl.add(GeometryPoint(longitude: c[0], latitude: c[1]))
+        gLines.add(gl)
+      result = %*{"type": "MultiLineString", "coordinates": gLines.mapIt(it.mapIt([it.longitude, it.latitude]))}
     of TagGeometryMultiPolygon:
-      let gm = s.cborUnpackGeometryMultiPolygon()
-      result = %*{"type": "MultiPolygon", "coordinates": seq[GeometryPolygon](gm).mapIt(it.mapIt(it.mapIt([it.longitude, it.latitude])))}
+      var polys: seq[seq[seq[seq[float64]]]]
+      s.cborUnpack(polys)
+      var gPolys: seq[GeometryPolygon]
+      for poly in polys:
+        var gp: GeometryPolygon
+        for ring in poly:
+          var gl: GeometryLine
+          for c in ring:
+            if c.len >= 2:
+              gl.add(GeometryPoint(longitude: c[0], latitude: c[1]))
+          gp.add(gl)
+        gPolys.add(gp)
+      result = %*{"type": "MultiPolygon", "coordinates": gPolys.mapIt(it.mapIt(it.mapIt([it.longitude, it.latitude])))}
     of TagGeometryCollection:
       result = %*{"type": "GeometryCollection", "geometries": s.cborUnpackSurrealValue()}
+    of TagNone:
+      var dummy: string
+      s.cborUnpack(dummy)
+      result = newJNull()
+    of TagTable:
+      var name: string
+      s.cborUnpack(name)
+      result = %name
     else:
       result = s.cborUnpackSurrealValue()
   of CborMajor.Simple:
@@ -421,23 +480,109 @@ proc cborUnpackSurrealValue*(s: CborStream): JsonNode =
       else:
         result = newJNull()
 
+# --- Type-aware params encoding for RPC ---
+
+const
+  MarkerRecordId* = "#recordid"
+  MarkerStringUuid* = "#stringuuid"
+  MarkerBinaryUuid* = "#binaryuuid"
+  MarkerTable* = "#table"
+  MarkerDatetime* = "#datetime"
+  MarkerDuration* = "#duration"
+  MarkerDecimal* = "#decimal"
+  MarkerRange* = "#range"
+  MarkerBound* = "#bound"
+
+proc cborPackRpcValue*(s: CborStream, node: JsonNode) =
+  if node.isNil:
+    s.cborPackNull()
+    return
+  case node.kind
+  of JNull: s.cborPackNull()
+  of JBool: s.cborPack(node.getBool())
+  of JInt: s.cborPack(node.getInt())
+  of JFloat: s.cborPack(node.getFloat())
+  of JString: s.cborPack(node.getStr())
+  of JArray:
+    s.cborPackInt(node.len.uint64, CborMajor.Array)
+    for item in node:
+      s.cborPackRpcValue(item)
+  of JObject:
+    if node.hasKey(MarkerRecordId):
+      let inner = node[MarkerRecordId]
+      if inner.kind == JObject and inner.hasKey("tb") and inner.hasKey("id"):
+        s.cborPackTag(CborTag(TagRecordID))
+        s.cborPack(@[inner["tb"].getStr(), inner["id"].getStr()])
+      else:
+        s.cborPackSurrealValue(node)
+    elif node.hasKey(MarkerStringUuid):
+      let inner = node[MarkerStringUuid]
+      s.cborPackTag(CborTag(TagStringUUID))
+      s.cborPack(inner.getStr())
+    elif node.hasKey(MarkerBinaryUuid):
+      let inner = node[MarkerBinaryUuid]
+      s.cborPackTag(CborTag(TagSpecBinaryUUID))
+      var bytes: seq[byte]
+      if inner.kind == JString:
+        let hex = inner.getStr()
+        for i in countup(0, hex.len - 1, 2):
+          bytes.add(parseHexInt(hex.substr(i, i + 1)).uint8)
+      elif inner.kind == JArray:
+        for b in inner:
+          bytes.add(b.getInt().uint8)
+      s.cborPack(bytes)
+    elif node.hasKey(MarkerTable):
+      let inner = node[MarkerTable]
+      s.cborPackTag(CborTag(TagTable))
+      s.cborPack(inner.getStr())
+    elif node.hasKey(MarkerDatetime):
+      let inner = node[MarkerDatetime]
+      s.cborPackTag(CborTag(TagCustomDatetime))
+      s.cborPack(inner.getStr())
+    elif node.hasKey(MarkerDuration):
+      let inner = node[MarkerDuration]
+      s.cborPackTag(CborTag(TagCustomDuration))
+      s.cborPack(inner.getStr())
+    elif node.hasKey(MarkerDecimal):
+      let inner = node[MarkerDecimal]
+      s.cborPackTag(CborTag(TagStringDecimal))
+      s.cborPack(inner.getStr())
+    elif node.hasKey(MarkerRange):
+      let inner = node[MarkerRange]
+      s.cborPackTag(CborTag(TagRange))
+      if inner.kind == JArray and inner.len == 2:
+        s.cborPackRpcValue(inner[0])
+        s.cborPackRpcValue(inner[1])
+    elif node.hasKey(MarkerBound):
+      let inner = node[MarkerBound]
+      if inner.kind == JObject:
+        if inner.hasKey("incl"):
+          s.cborPackTag(CborTag(TagBoundIncluded))
+          s.cborPackRpcValue(inner["incl"])
+        elif inner.hasKey("excl"):
+          s.cborPackTag(CborTag(TagBoundExcluded))
+          s.cborPackRpcValue(inner["excl"])
+        else:
+          s.cborPackSurrealValue(node)
+      else:
+        s.cborPackSurrealValue(node)
+    else:
+      s.cborPackSurrealValue(node)
+
 # --- Public API ---
 
 proc marshalCbor*(node: JsonNode): string =
-  ## Encode a JsonNode to SurrealDB CBOR bytes.
   var s = CborStream.init(1024)
   s.cborPackSurrealValue(node)
   result = s.data
 
 proc unmarshalCbor*(data: string): JsonNode =
-  ## Decode SurrealDB CBOR bytes to JsonNode.
   var s = CborStream.init(data)
   s.setPosition(0)
   result = s.cborUnpackSurrealValue()
 
 proc marshalCborRpcRequest*(id: string, rpcMethod: string, params: JsonNode,
                             sessionId: string = "", txnId: string = ""): string =
-  ## Encode a JSON-RPC request as CBOR.
   var mapLen = 3
   if sessionId.len > 0: inc mapLen
   if txnId.len > 0: inc mapLen
@@ -448,7 +593,7 @@ proc marshalCborRpcRequest*(id: string, rpcMethod: string, params: JsonNode,
   s.cborPack("method")
   s.cborPack(rpcMethod)
   s.cborPack("params")
-  s.cborPackSurrealValue(params)
+  s.cborPackRpcValue(params)
   if sessionId.len > 0:
     s.cborPack("session")
     s.cborPack(sessionId)
@@ -456,3 +601,33 @@ proc marshalCborRpcRequest*(id: string, rpcMethod: string, params: JsonNode,
     s.cborPack("txn")
     s.cborPack(txnId)
   result = s.data
+
+proc recordidCbor*(table: string, id: string): JsonNode =
+  result = %*{MarkerRecordId: {"tb": table, "id": id}}
+
+proc stringuuidCbor*(u: string): JsonNode =
+  result = %*{MarkerStringUuid: u}
+
+proc binaryuuidCbor*(hex: string): JsonNode =
+  result = %*{MarkerBinaryUuid: hex}
+
+proc tableCbor*(t: string): JsonNode =
+  result = %*{MarkerTable: t}
+
+proc datetimeCbor*(dt: string): JsonNode =
+  result = %*{MarkerDatetime: dt}
+
+proc durationCbor*(d: string): JsonNode =
+  result = %*{MarkerDuration: d}
+
+proc decimalCbor*(dec: string): JsonNode =
+  result = %*{MarkerDecimal: dec}
+
+proc rangeCbor*(rangebegin, rangeend: JsonNode): JsonNode =
+  var arr = newJArray()
+  arr.add(rangebegin)
+  arr.add(rangeend)
+  result = %*{MarkerRange: arr}
+
+proc boundCbor*(kind: string, val: JsonNode): JsonNode =
+  result = %*{MarkerBound: {"kind": val}}
