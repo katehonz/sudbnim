@@ -1,4 +1,4 @@
-import std/[json, tables, strutils, macros, random, sequtils, math]
+import std/[json, tables, strutils, macros, random, sequtils, math, options]
 
 type
   RecordId* = object
@@ -10,6 +10,64 @@ type
   SurQL* = distinct string
 
   UUID* = distinct string
+
+  Datetime* = distinct string
+
+  Duration* = distinct string
+
+  Decimal* = distinct string
+
+  SurFuture* = distinct string
+
+  SurNone* = distinct string
+
+  SurTable* = distinct string
+
+  GeometryPoint* = object
+    longitude*: float
+    latitude*: float
+
+  GeometryLine* = seq[GeometryPoint]
+
+  GeometryPolygon* = seq[GeometryLine]
+
+  GeometryMultiPoint* = seq[GeometryPoint]
+
+  GeometryMultiLine* = seq[GeometryLine]
+
+  GeometryMultiPolygon* = seq[GeometryPolygon]
+
+  GeometryCollection* = object
+    geometries*: JsonNode
+
+  Auth* = object
+    namespace*: Option[string]
+    database*: Option[string]
+    scope*: Option[string]
+    access*: Option[string]
+    username*: Option[string]
+    password*: Option[string]
+
+  Tokens* = object
+    access*: string
+    refresh*: string
+
+  PatchData* = object
+    op*: string
+    path*: string
+    value*: JsonNode
+
+  Relationship* = object
+    id*: Option[RecordId]
+    inRec*: RecordId
+    outRec*: RecordId
+    relation*: DbTable
+    data*: JsonNode
+
+  VersionData* = object
+    version*: string
+    build*: string
+    timestamp*: string
 
   RpcMethod* = enum
     rpcUse = "use"
@@ -106,12 +164,101 @@ type
     delay*: float
     maxRetries*: int
 
+  LogLevel* = enum
+    llDebug, llInfo, llWarn, llError
+
+  Logger* = ref object of RootObj
+    onLog*: proc(level: LogLevel, msg: string) {.gcsafe, closure.}
+    onDebug*: proc(msg: string) {.gcsafe, closure.}
+    onInfo*: proc(msg: string) {.gcsafe, closure.}
+    onWarn*: proc(msg: string) {.gcsafe, closure.}
+    onError*: proc(msg: string) {.gcsafe, closure.}
+
+type
+  ErrSessionClosed* = object of CatchableError
+  ErrTransactionClosed* = object of CatchableError
+  ErrNotConnected* = object of CatchableError
+  ErrIDInUse* = object of CatchableError
+
+proc newErrSessionClosed*(): ref ErrSessionClosed =
+  new(result); result.msg = "session already detached"
+
+proc newErrTransactionClosed*(): ref ErrTransactionClosed =
+  new(result); result.msg = "transaction already committed or canceled"
+
+proc newErrNotConnected*(): ref ErrNotConnected =
+  new(result); result.msg = "not connected"
+
+proc newErrIDInUse*(): ref ErrIDInUse =
+  new(result); result.msg = "id already in use"
+
+proc log*(l: Logger, level: LogLevel, msg: string) =
+  if l.isNil:
+    return
+  if l.onLog != nil: l.onLog(level, msg)
+  case level
+  of llDebug:
+    if l.onDebug != nil: l.onDebug(msg)
+  of llInfo:
+    if l.onInfo != nil: l.onInfo(msg)
+  of llWarn:
+    if l.onWarn != nil: l.onWarn(msg)
+  of llError:
+    if l.onError != nil: l.onError(msg)
+
+proc debug*(l: Logger, msg: string) = l.log(llDebug, msg)
+proc info*(l: Logger, msg: string) = l.log(llInfo, msg)
+proc warn*(l: Logger, msg: string) = l.log(llWarn, msg)
+proc error*(l: Logger, msg: string) = l.log(llError, msg)
+
+proc newConsoleLogger*(prefix = "[surrealdb]"): Logger =
+  result = Logger()
+  result.onLog = proc(level: LogLevel, msg: string) =
+    echo prefix, " [", level, "] ", msg
+
+proc newSilentLogger*(): Logger = Logger()
+
 proc `$`*(rid: RecordId): string = rid.table & ":" & rid.id
 proc `==`*(a, b: RecordId): bool = a.table == b.table and a.id == b.id
 proc `$`*(t: DbTable): string = string(t)
 proc `$`*(q: SurQL): string = string(q)
 proc `$`*(u: UUID): string = string(u)
+proc `$`*(dt: Datetime): string = string(dt)
+proc `$`*(d: Duration): string = string(d)
+proc `$`*(dec: Decimal): string = string(dec)
+proc `$`*(f: SurFuture): string = string(f)
+proc `$`*(n: SurNone): string = string(n)
+proc `$`*(tbl: SurTable): string = string(tbl)
 proc `%%`*(rid: RecordId): JsonNode = %*{"tb": rid.table, "id": rid.id}
+proc `%%`*(dt: Datetime): JsonNode = %*string(dt)
+proc `%%`*(d: Duration): JsonNode = %*string(d)
+proc `%%`*(dec: Decimal): JsonNode = %*string(dec)
+proc `%%`*(f: SurFuture): JsonNode = %*string(f)
+proc `%%`*(none: SurNone): JsonNode = newJNull()
+proc `%%`*(tbl: SurTable): JsonNode = %*string(tbl)
+proc `%%`*(gp: GeometryPoint): JsonNode =
+  %*{"type": "Point", "coordinates": [gp.longitude, gp.latitude]}
+proc `%%`*(gm: GeometryLine): JsonNode =
+  %*{"type": "LineString", "coordinates": gm.mapIt([it.longitude, it.latitude])}
+proc `%%`*(gp: GeometryPolygon): JsonNode =
+  %*{"type": "Polygon", "coordinates": gp.mapIt(it.mapIt([it.longitude, it.latitude]))}
+proc `%%`*(a: Auth): JsonNode =
+  result = newJObject()
+  if a.namespace.isSome: result["NS"] = %*a.namespace.get
+  if a.database.isSome: result["DB"] = %*a.database.get
+  if a.scope.isSome: result["SC"] = %*a.scope.get
+  if a.access.isSome: result["AC"] = %*a.access.get
+  if a.username.isSome: result["user"] = %*a.username.get
+  if a.password.isSome: result["pass"] = %*a.password.get
+proc `%%`*(pd: PatchData): JsonNode = %*{"op": pd.op, "path": pd.path, "value": pd.value}
+proc `%%`*(tokens: Tokens): JsonNode = %*{"access": tokens.access, "refresh": tokens.refresh}
+proc `%%`*(rel: Relationship): JsonNode =
+  result = newJObject()
+  if rel.id.isSome: result["id"] = %*rel.id.get
+  result["in"] = %*rel.inRec
+  result["out"] = %*rel.outRec
+  result["relation"] = %*($rel.relation)
+  if rel.data.len > 0: result["data"] = rel.data
 
 proc ok*[T](val: T): SurrealResult[T] = SurrealResult[T](isOk: true, ok: val)
 proc err*[T](code: int, msg: string): SurrealResult[T] =

@@ -1,5 +1,6 @@
 import std/[json, asyncdispatch, tables, strutils]
-import ./connection, ./types
+import ./connection as dbconn
+import ./types
 
 type
   ConnectionState* = enum
@@ -14,6 +15,12 @@ type
     diff*: bool
     handler*: LiveQueryHandler
 
+  NotificationRouter* = ref object
+    db*: Db
+    routes*: TableRef[string, seq[string]]
+    regMap*: TableRef[string, LiveQueryReg]
+    logger*: Logger
+
   ReconnectingDb* = ref object
     url*: string
     ns*: string
@@ -22,6 +29,7 @@ type
     state*: ConnectionState
     db*: Db
     retryer*: Retryer
+    logger*: Logger
     vars*: TableRef[string, JsonNode]
     liveQueries*: TableRef[string, LiveQueryReg]
     onReconnect*: proc() {.gcsafe, closure.}
@@ -33,14 +41,13 @@ proc reconnectLiveQueries(rdb: ReconnectingDb) {.async.} =
   if rdb.db == nil: return
   var newRegs = newTable[string, LiveQueryReg]()
   for oldId, reg in rdb.liveQueries:
-    let res = await rdb.db.live(reg.table, reg.diff)
+    let res = await dbconn.live(rdb.db, reg.table, reg.diff)
     if res.isOk:
       let newId = res.ok.getStr("")
       if newId.len > 0:
         newRegs[newId] = reg
         if reg.handler != nil:
-          rdb.db.onNotification(newId, reg.handler)
-    # Old IDs are now invalid
+          dbconn.onNotification(rdb.db, newId, reg.handler)
   rdb.liveQueries = newRegs
 
 proc connectWithRetry(rdb: ReconnectingDb): Future[bool] {.async.} =
@@ -51,20 +58,19 @@ proc connectWithRetry(rdb: ReconnectingDb): Future[bool] {.async.} =
 
   while true:
     try:
-      let db = await connect(rdb.url)
+      let db = await dbconn.connect(rdb.url, rdb.logger)
       if rdb.ns.len > 0 and rdb.database.len > 0:
-        discard await db.use(rdb.ns, rdb.database)
+        discard await dbconn.use(db, rdb.ns, rdb.database)
       if rdb.token.len > 0:
-        discard await db.authenticate(rdb.token)
+        discard await dbconn.authenticate(db, rdb.token)
       for key, value in rdb.vars:
-        discard await db.setVar(key, value)
+        discard await dbconn.setVar(db, key, value)
 
       rdb.db = db
       rdb.state = stateConnected
       if rdb.retryer != nil:
         rdb.retryer.reset()
 
-      # Restore live queries
       await rdb.reconnectLiveQueries()
 
       if rdb.onReconnect != nil:
@@ -85,18 +91,54 @@ proc connect*(rdb: ReconnectingDb): Future[bool] {.async.} =
 proc reconnectLoop(rdb: ReconnectingDb) {.async.} =
   while rdb.state == stateConnected:
     if rdb.db == nil or not rdb.db.isConnected():
-      echo "[surrealdb] Connection lost, reconnecting..."
+      rdb.logger.warn("Connection lost, reconnecting...")
       discard await rdb.connectWithRetry()
     await sleepAsync(5000)
 
-proc newReconnectingDb*(url: string, retryer: Retryer = nil): ReconnectingDb =
+proc newReconnectingDb*(url: string, retryer: Retryer = nil, logger: Logger = nil): ReconnectingDb =
   result = ReconnectingDb(
     url: url,
     state: stateDisconnected,
     retryer: retryer,
+    logger: if logger != nil: logger else: newSilentLogger(),
     vars: newTable[string, JsonNode](),
     liveQueries: newTable[string, LiveQueryReg]()
   )
+
+proc newNotificationRouter*(db: Db, logger: Logger = nil): NotificationRouter =
+  result = NotificationRouter(
+    db: db,
+    routes: newTable[string, seq[string]](),
+    regMap: newTable[string, LiveQueryReg](),
+    logger: if logger != nil: logger else: newSilentLogger()
+  )
+
+proc register*(nr: NotificationRouter, internalId: string, reg: LiveQueryReg) =
+  nr.regMap[internalId] = reg
+
+proc unregister*(nr: NotificationRouter, internalId: string) =
+  nr.routes.del(internalId)
+  nr.regMap.del(internalId)
+
+proc reRegister*(nr: NotificationRouter) {.async.} =
+  var newRoutes = newTable[string, seq[string]]()
+  for internalId, reg in nr.regMap:
+    let res = await dbconn.live(nr.db, reg.table, reg.diff)
+    if res.isOk:
+      let externalId = res.ok.getStr("")
+      if externalId.len > 0:
+        newRoutes[internalId] = @[externalId]
+        if reg.handler != nil:
+          dbconn.onNotification(nr.db, externalId, reg.handler)
+    else:
+      nr.logger.warn("Failed to re-register live query: " & internalId)
+  nr.routes = newRoutes
+
+proc externalIds*(nr: NotificationRouter, internalId: string): seq[string] =
+  if nr.routes.hasKey(internalId):
+    result = nr.routes[internalId]
+  else:
+    result = @[]
 
 proc start*(rdb: ReconnectingDb) {.async.} =
   let ok = await rdb.connect()
@@ -106,144 +148,156 @@ proc start*(rdb: ReconnectingDb) {.async.} =
 proc disconnect*(rdb: ReconnectingDb) =
   rdb.state = stateClosed
   if rdb.db != nil:
-    rdb.db.disconnect()
+    dbconn.disconnect(rdb.db)
 
 proc use*(rdb: ReconnectingDb, ns, database: string): Future[SurrealResult[JsonNode]] {.async.} =
   rdb.ns = ns; rdb.database = database
   if rdb.db != nil:
-    result = await rdb.db.use(ns, database)
+    result = await dbconn.use(rdb.db, ns, database)
 
 proc signin*(rdb: ReconnectingDb, user, pass: string): Future[SurrealResult[JsonNode]] {.async.} =
   if rdb.db != nil:
-    result = await rdb.db.signin(user, pass)
+    result = await dbconn.signin(rdb.db, user, pass)
     if result.isOk and result.ok.kind == JString:
       rdb.token = result.ok.getStr()
 
 proc authenticate*(rdb: ReconnectingDb, token: string): Future[SurrealResult[JsonNode]] {.async.} =
   rdb.token = token
   if rdb.db != nil:
-    result = await rdb.db.authenticate(token)
+    result = await dbconn.authenticate(rdb.db, token)
 
 proc invalidate*(rdb: ReconnectingDb): Future[SurrealResult[JsonNode]] {.async.} =
   rdb.token = ""
   if rdb.db != nil:
-    result = await rdb.db.invalidate()
+    result = await dbconn.invalidate(rdb.db)
 
 proc setVar*(rdb: ReconnectingDb, name: string, value: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   rdb.vars[name] = value
   if rdb.db != nil:
-    result = await rdb.db.setVar(name, value)
+    result = await dbconn.setVar(rdb.db, name, value)
 
 proc unsetVar*(rdb: ReconnectingDb, name: string): Future[SurrealResult[JsonNode]] {.async.} =
   rdb.vars.del(name)
   if rdb.db != nil:
-    result = await rdb.db.unsetVar(name)
+    result = await dbconn.unsetVar(rdb.db, name)
 
 proc signinNs*(rdb: ReconnectingDb, ns, user, pass: string): Future[SurrealResult[JsonNode]] {.async.} =
   if rdb.db != nil:
-    result = await rdb.db.signinNs(ns, user, pass)
+    result = await dbconn.signinNs(rdb.db, ns, user, pass)
     if result.isOk and result.ok.kind == JString:
       rdb.token = result.ok.getStr()
 
 proc signinDb*(rdb: ReconnectingDb, ns, database, user, pass: string): Future[SurrealResult[JsonNode]] {.async.} =
   if rdb.db != nil:
-    result = await rdb.db.signinDb(ns, database, user, pass)
+    result = await dbconn.signinDb(rdb.db, ns, database, user, pass)
     if result.isOk and result.ok.kind == JString:
       rdb.token = result.ok.getStr()
 
 proc query*(rdb: ReconnectingDb, sql: string, vars: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.query(sql, vars)
+  if rdb.db != nil: result = await dbconn.query(rdb.db, sql, vars)
 
 proc query*(rdb: ReconnectingDb, sql: SurQL, vars: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.query(sql, vars)
+  if rdb.db != nil: result = await dbconn.query(rdb.db, sql, vars)
 
 proc select*(rdb: ReconnectingDb, thing: string): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.select(thing)
+  if rdb.db != nil: result = await dbconn.select(rdb.db, thing)
 
 proc select*(rdb: ReconnectingDb, thing: RecordId): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.select(thing)
+  if rdb.db != nil: result = await dbconn.select(rdb.db, thing)
 
 proc select*(rdb: ReconnectingDb, thing: DbTable): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.select(thing)
+  if rdb.db != nil: result = await dbconn.select(rdb.db, thing)
 
 proc create*(rdb: ReconnectingDb, thing: string, content: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.create(thing, content)
+  if rdb.db != nil: result = await dbconn.create(rdb.db, thing, content)
 
 proc create*(rdb: ReconnectingDb, thing: RecordId, content: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.create(thing, content)
+  if rdb.db != nil: result = await dbconn.create(rdb.db, thing, content)
 
 proc insert*(rdb: ReconnectingDb, table: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.insert(table, content)
+  if rdb.db != nil: result = await dbconn.insert(rdb.db, table, content)
 
 proc update*(rdb: ReconnectingDb, thing: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.update(thing, content)
+  if rdb.db != nil: result = await dbconn.update(rdb.db, thing, content)
 
 proc update*(rdb: ReconnectingDb, thing: RecordId, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.update(thing, content)
+  if rdb.db != nil: result = await dbconn.update(rdb.db, thing, content)
 
 proc upsert*(rdb: ReconnectingDb, thing: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.upsert(thing, content)
+  if rdb.db != nil: result = await dbconn.upsert(rdb.db, thing, content)
 
 proc merge*(rdb: ReconnectingDb, thing: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.merge(thing, content)
+  if rdb.db != nil: result = await dbconn.merge(rdb.db, thing, content)
 
 proc merge*(rdb: ReconnectingDb, thing: RecordId, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.merge(thing, content)
+  if rdb.db != nil: result = await dbconn.merge(rdb.db, thing, content)
 
 proc delete*(rdb: ReconnectingDb, thing: string): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.delete(thing)
+  if rdb.db != nil: result = await dbconn.delete(rdb.db, thing)
 
 proc delete*(rdb: ReconnectingDb, thing: RecordId): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.delete(thing)
+  if rdb.db != nil: result = await dbconn.delete(rdb.db, thing)
 
 proc delete*(rdb: ReconnectingDb, thing: DbTable): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.delete(thing)
+  if rdb.db != nil: result = await dbconn.delete(rdb.db, thing)
 
 proc live*(rdb: ReconnectingDb, table: string, diff: bool = false, handler: LiveQueryHandler = nil): Future[SurrealResult[JsonNode]] {.async.} =
   if rdb.db != nil:
-    result = await rdb.db.live(table, diff)
+    result = await dbconn.live(rdb.db, table, diff)
     if result.isOk:
       let liveId = result.ok.getStr("")
       if liveId.len > 0:
         rdb.liveQueries[liveId] = LiveQueryReg(table: table, diff: diff, handler: handler)
         if handler != nil:
-          rdb.db.onNotification(liveId, handler)
+          dbconn.onNotification(rdb.db, liveId, handler)
 
 proc kill*(rdb: ReconnectingDb, liveId: string): Future[SurrealResult[JsonNode]] {.async.} =
   rdb.liveQueries.del(liveId)
-  if rdb.db != nil: result = await rdb.db.kill(liveId)
+  if rdb.db != nil: result = await dbconn.kill(rdb.db, liveId)
 
 proc run*(rdb: ReconnectingDb, fnName: string, args: JsonNode = %[]): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.run(fnName, args)
+  if rdb.db != nil: result = await dbconn.run(rdb.db, fnName, args)
 
 proc version*(rdb: ReconnectingDb): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.version()
+  if rdb.db != nil: result = await dbconn.version(rdb.db)
 
 proc info*(rdb: ReconnectingDb): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.info()
+  if rdb.db != nil: result = await dbconn.info(rdb.db)
 
 proc signup*(rdb: ReconnectingDb, ns, database, access: string, params: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   if rdb.db != nil:
-    result = await rdb.db.signup(ns, database, access, params)
+    result = await dbconn.signup(rdb.db, ns, database, access, params)
     if result.isOk and result.ok.kind == JString:
       rdb.token = result.ok.getStr()
 
 proc relate*(rdb: ReconnectingDb, source: string, relation: string, target: string,
              content: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.relate(source, relation, target, content)
+  if rdb.db != nil: result = await dbconn.relate(rdb.db, source, relation, target, content)
 
 proc patch*(rdb: ReconnectingDb, thing: string, patches: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.patch(thing, patches)
+  if rdb.db != nil: result = await dbconn.patch(rdb.db, thing, patches)
 
 proc insertRelation*(rdb: ReconnectingDb, table: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.insertRelation(table, content)
+  if rdb.db != nil: result = await dbconn.insertRelation(rdb.db, table, content)
 
 # Transactions
-proc begin*(rdb: ReconnectingDb): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.begin()
+proc begin*(rdb: ReconnectingDb): Future[SurrealResult[JsonNode]] =
+  if rdb.db == nil:
+    var f = newFuture[SurrealResult[JsonNode]]("begin")
+    f.complete(err[JsonNode](-1, "not connected"))
+    return f
+  result = dbconn.begin(rdb.db)
 
-proc commit*(rdb: ReconnectingDb): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.commit()
+proc commit*(rdb: ReconnectingDb): Future[SurrealResult[JsonNode]] =
+  if rdb.db == nil:
+    var f = newFuture[SurrealResult[JsonNode]]("commit")
+    f.complete(err[JsonNode](-1, "not connected"))
+    return f
+  result = dbconn.commit(rdb.db)
 
-proc cancel*(rdb: ReconnectingDb): Future[SurrealResult[JsonNode]] {.async.} =
-  if rdb.db != nil: result = await rdb.db.cancel()
+proc cancel*(rdb: ReconnectingDb): Future[SurrealResult[JsonNode]] =
+  if rdb.db == nil:
+    var f = newFuture[SurrealResult[JsonNode]]("cancel")
+    f.complete(err[JsonNode](-1, "not connected"))
+    return f
+  result = dbconn.cancel(rdb.db)

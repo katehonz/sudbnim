@@ -1,4 +1,4 @@
-import std/[asyncnet, asyncdispatch, nativesockets, random, uri, strutils, base64, streams]
+import std/[asyncnet, asyncdispatch, nativesockets, random, uri, strutils, base64, streams, net]
 
 type
   WSOpcode* = enum
@@ -9,6 +9,7 @@ type
 
   WSError* = object of IOError
   WSClosedError* = object of WSError
+  WSSError* = object of WSError
 
   WsFrame = tuple[fin: bool, opcode: WSOpcode, data: string]
 
@@ -16,6 +17,7 @@ type
     socket*: AsyncSocket
     state*: WSState
     masked*: bool
+    useSsl*: bool
 
 proc genMaskKey(): array[4, char] =
   for i in 0..3: result[i] = char(rand(255))
@@ -114,24 +116,43 @@ proc setupPings*(c: WSClient, seconds: float) =
 
 proc closeWs*(c: WSClient) =
   c.state = wsClosed
+  when defined(ssl):
+    try:
+      if c.useSsl and c.socket.sslHandle != nil:
+        SSL_shutdown(c.socket.sslHandle)
+    except: discard
   try: c.socket.close()
   except: discard
 
 proc newWsClient*(url: string): Future[WSClient] {.async.} =
-  var client = WSClient(masked: true, state: wsConnecting)
+  var client = WSClient(masked: true, state: wsConnecting, useSsl: false)
   var uri = parseUri(url)
   var port = Port(80)
+  var isSecure = false
   case uri.scheme
-  of "ws": port = Port(80)
+  of "ws":
+    port = Port(80)
   of "wss":
     port = Port(443)
-    raise newException(WSError, "wss not supported yet")
-  else: raise newException(WSError, "Invalid scheme: " & uri.scheme)
+    isSecure = true
+  else:
+    raise newException(WSError, "Invalid scheme: " & uri.scheme)
   if uri.port.len > 0: port = Port(parseInt(uri.port))
   let host = uri.hostname
   let path = if uri.path.len > 0: uri.path else: "/"
   client.socket = newAsyncSocket()
   await client.socket.connect(host, port)
+  when defined(ssl):
+    if isSecure:
+      try:
+        let sslCtx = newContext(verifyMode = CVerifyPeer)
+        wrapConnectedSocket(sslCtx, client.socket, handshakeAsClient, host)
+        client.useSsl = true
+      except:
+        raise newException(WSSError, "SSL/TLS handshake failed: " & getCurrentExceptionMsg())
+  else:
+    if isSecure:
+      raise newException(WSSError, "SSL/TLS not available (compile with -d:ssl)")
   var secStr = newString(16)
   for i in 0..<secStr.len: secStr[i] = char(rand(255))
   let secKey = encode(secStr)
@@ -151,6 +172,6 @@ proc newWsClient*(url: string): Future[WSClient] {.async.} =
     response.add(line & "\n")
   if not response.contains("101"):
     client.socket.close()
-    raise newException(WSError, "WebSocket upgrade failed")
+    raise newException(WSError, "WebSocket upgrade failed (response did not contain 101)")
   client.state = wsOpen
   result = client
