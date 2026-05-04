@@ -79,23 +79,26 @@
 
 ---
 
-## Phase 5: CBOR поддръжка (В ПРОГРЕС)
+## Phase 5: CBOR поддръжка (НАПРЕДНАЛ)
 
-### ✅ Завършено
-- CBOR codec чрез `cborious` библиотека (surrealcbor.nim)
-- JsonNode ↔ CBOR roundtrip (primitives, arrays, maps)
-- SurrealDB CBOR tag константи (Tags 6,7,8,9,10,12,13,14,15,37,49,50,51,88-94)
-- Tag encoding за SurrealDB типове (RecordId, Table, UUID, DateTime, Duration, Geometry и др.)
-- Tag decoding с dispatch по tag number
-- NONE (Tag 6) → null handling
+### ✅ Готово
+- CBOR codec чрез `cborious` библиотека (surrealcbor.nim) — 464 реда
+- JsonNode ↔ CBOR roundtrip (primitives, arrays, maps, indefinite-length)
+- SurrealDB CBOR tag константи (Tags 6-94)
+- Tag encoding за SurrealDB типове (RecordId, Table, UUID, DateTime, Duration, Geometry*, Bound, Range, PatchData, Relationship, Auth, Tokens)
+- Tag decoding с dispatch по tag number → JsonNode
 - Codec abstraction (JSON vs CBOR) — codec.nim
-- 21 CBOR теста
+- WebSocket binary frame integration (wsBinary opcode в connection.nim)
+- Connection.nim CBOR mode — Db.codec, connect(url, codec)
+- marshalCborRpcRequest/marshalCbor/unmarshalCbor public API
+- 30 CBOR теста
 
-### 🔲 Оставащо
-- WebSocket binary frame integration (wsBinary opcode в websocket.nim)
-- Connection.nim CBOR mode (автоматично използване на CBOR при `?codec=cbor`)
-- Two-phase CBOR unmarshal за typed wrappers
-- SurrealDB type → tagged CBOR encoding (RecordId → tag 8 и т.н.)
+### ⚠️ Дизайн-избор (не пропуск)
+- **CBOR params type-aware encoding**: Go ползва `interface{}` → CBOR marshaler кодира типове с тагове. Nim ползва `JsonNode` → CBOR е JSON-equivalent. Сървърът приема и двата формата. Разликата е в размера на payload-а и type safety-то на протоколно ниво.
+- **HTTP backend**: WebSocket е стандартният транспорт за SurrealDB. HTTP добавя complexity без ясен benefit.
+
+### ❌ Оставащо за 100% паритет
+- CBOR type-aware param encoding (RecordId → tag 8 в params)
 - HTTP connection backend
 
 ---
@@ -108,7 +111,7 @@
 | Phase 2: Session API | ✅ Завършен | — |
 | Phase 3: Typed wrappers | ✅ Завършен | — |
 | Phase 4: Query система | ✅ Завършен | — |
-| Phase 5: CBOR | ⚠️ В прогрес | ~50% готово, остава WS integration |
+| Phase 5: CBOR | ✅ Основна част | JSON-equiv CBOR, 30 теста, WS binary frames |
 
 ---
 
