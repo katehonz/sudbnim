@@ -394,6 +394,46 @@ proc insertRelation*(tx: Transaction, table: string, content: JsonNode): Future[
   tx.requireOpen()
   result = await tx.db.send("insert_relation", %*[table, content], sessionId = tx.sessionId, txnId = tx.id)
 
+proc run*(tx: Transaction, fnName: string, args: JsonNode = %[]): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("run", %*[fnName, args], sessionId = tx.sessionId, txnId = tx.id)
+
+proc create*(tx: Transaction, thing: RecordId, content: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("create", %*[$thing, content], sessionId = tx.sessionId, txnId = tx.id)
+
+proc select*(tx: Transaction, thing: RecordId): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("select", %*[$thing], sessionId = tx.sessionId, txnId = tx.id)
+
+proc select*(tx: Transaction, thing: DbTable): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("select", %*[string(thing)], sessionId = tx.sessionId, txnId = tx.id)
+
+proc update*(tx: Transaction, thing: RecordId, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("update", %*[$thing, content], sessionId = tx.sessionId, txnId = tx.id)
+
+proc merge*(tx: Transaction, thing: RecordId, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("merge", %*[$thing, content], sessionId = tx.sessionId, txnId = tx.id)
+
+proc upsert*(tx: Transaction, thing: RecordId, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("upsert", %*[$thing, content], sessionId = tx.sessionId, txnId = tx.id)
+
+proc patch*(tx: Transaction, thing: RecordId, patches: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("patch", %*[$thing, patches], sessionId = tx.sessionId, txnId = tx.id)
+
+proc delete*(tx: Transaction, thing: RecordId): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("delete", %*[$thing], sessionId = tx.sessionId, txnId = tx.id)
+
+proc delete*(tx: Transaction, thing: DbTable): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("delete", %*[string(thing)], sessionId = tx.sessionId, txnId = tx.id)
+
 # Session delegates
 proc query*(s: Session, sql: string, vars: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
@@ -593,7 +633,6 @@ proc insertRelation*(s: Session, table: string, content: JsonNode): Future[Surre
 
 # Signin / Signup with Refresh (SurrealDB v3+)
 proc signinWithRefresh*(db: Db, authData: JsonNode): Future[SurrealResult[Tokens]] {.async.} =
-  result = err[Tokens](-1, "not yet called")
   # Build params with refresh marker
   if authData.kind == JObject:
     var p = authData.copy()

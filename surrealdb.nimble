@@ -1,5 +1,5 @@
 # Package
-version       = "0.3.0"
+version       = "0.4.0"
 author        = "sudbnim contributors"
 description   = "Production-grade SurrealDB driver for Nim (SurrealDB 2.x/3.x)"
 license       = "MIT"
