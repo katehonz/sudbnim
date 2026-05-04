@@ -5,3 +5,4 @@ tests/test_reconnect
 tests/test_unit
 tests/test_typed
 tests/test_cbor
+tests/test_cbor_mock
