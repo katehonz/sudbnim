@@ -105,7 +105,7 @@ proc cborPackRange*(s: CborStream, r: Range) =
   s.cborPackSurrealValue(r.endBound)
 
 proc cborPackPatchData*(s: CborStream, pd: PatchData) =
-  s.cborPack(3)  # array of 3 elements
+  s.cborPackInt(3, CborMajor.Array)
   s.cborPack(pd.op)
   s.cborPack(pd.path)
   s.cborPackSurrealValue(pd.value)
@@ -115,7 +115,7 @@ proc cborPackRelationship*(s: CborStream, rel: Relationship) =
   if rel.id.isSome: inc mapLen
   if rel.data != nil and rel.data.kind != JObject: inc mapLen
   elif rel.data != nil and rel.data.len > 0: inc mapLen
-  s.cborPack(mapLen)
+  s.cborPackInt(mapLen.uint64, CborMajor.Map)
   if rel.id.isSome:
     s.cborPack("id")
     s.cborPackRecordId(rel.id.get)
@@ -137,7 +137,7 @@ proc cborPackAuth*(s: CborStream, a: Auth) =
   if a.access.isSome: inc mapLen
   if a.username.isSome: inc mapLen
   if a.password.isSome: inc mapLen
-  s.cborPack(mapLen)
+  s.cborPackInt(mapLen.uint64, CborMajor.Map)
   if a.namespace.isSome: s.cborPack("NS"); s.cborPack(a.namespace.get)
   if a.database.isSome: s.cborPack("DB"); s.cborPack(a.database.get)
   if a.scope.isSome: s.cborPack("SC"); s.cborPack(a.scope.get)
@@ -146,7 +146,7 @@ proc cborPackAuth*(s: CborStream, a: Auth) =
   if a.password.isSome: s.cborPack("pass"); s.cborPack(a.password.get)
 
 proc cborPackTokens*(s: CborStream, t: Tokens) =
-  s.cborPack(2)
+  s.cborPackInt(2, CborMajor.Map)
   s.cborPack("access")
   s.cborPack(t.access)
   s.cborPack("refresh")
@@ -442,7 +442,7 @@ proc marshalCborRpcRequest*(id: string, rpcMethod: string, params: JsonNode,
   if sessionId.len > 0: inc mapLen
   if txnId.len > 0: inc mapLen
   var s = CborStream.init(512)
-  s.cborPack(mapLen)
+  s.cborPackInt(mapLen.uint64, CborMajor.Map)
   s.cborPack("id")
   s.cborPack(id)
   s.cborPack("method")

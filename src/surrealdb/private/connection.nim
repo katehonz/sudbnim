@@ -1,5 +1,5 @@
 import std/[json, asyncdispatch, tables, strutils, random, jsonutils]
-import ./websocket, ./types
+import ./websocket, ./types, ./codec
 
 export types
 
@@ -19,6 +19,7 @@ type
     liveQueries*: TableRef[string, LiveQueryHandler]
     token*: string
     logger*: Logger
+    codec*: Codec
 
   Session* = ref object
     db*: Db
@@ -65,59 +66,65 @@ proc listenLoop*(db: Db) {.async.} =
   while db.ws.state == wsOpen:
     try:
       let (opcode, data) = await db.ws.receivePacket()
+      var msg: JsonNode
       case opcode
       of wsText:
-        let msg = parseJson(data)
-        if msg.hasKey("id") and msg["id"].kind == JString:
-          let id = msg["id"].getStr()
-          if db.pending.hasKey(id):
-            let future = db.pending[id]
-            db.pending.del(id)
-            if msg.hasKey("error"):
-              let rpcErr = parseRpcError(msg["error"])
-              future.complete(err[JsonNode](rpcErr.code, rpcErr.message, rpcErr.serverError))
-            elif msg.hasKey("result"):
-              future.complete(ok(msg["result"]))
-            else:
-              future.complete(ok(msg))
-          else:
-            if msg.hasKey("error"):
-              db.logger.warn("Unrouted error: " & $msg["error"])
-        elif msg.hasKey("result") and msg["result"].kind == JObject and
-             msg["result"].hasKey("action"):
-          db.dispatchNotification(msg)
-        elif msg.hasKey("error"):
-          db.logger.warn("Unrouted error: " & $msg["error"])
+        msg = parseJson(data)
+      of wsBinary:
+        if not db.codec.isCbor:
+          db.logger.warn("Received binary frame but codec is not CBOR, ignoring")
+          continue
+        msg = db.codec.unmarshalResponse(data)
       of wsClose: db.ws.state = wsClosed; break
       of wsPing: await db.ws.sendWs("", wsPong)
-      else: discard
+      else: continue
+      if msg.hasKey("id") and msg["id"].kind == JString:
+        let id = msg["id"].getStr()
+        if db.pending.hasKey(id):
+          let future = db.pending[id]
+          db.pending.del(id)
+          if msg.hasKey("error"):
+            let rpcErr = parseRpcError(msg["error"])
+            future.complete(err[JsonNode](rpcErr.code, rpcErr.message, rpcErr.serverError))
+          elif msg.hasKey("result"):
+            future.complete(ok(msg["result"]))
+          else:
+            future.complete(ok(msg))
+        else:
+          if msg.hasKey("error"):
+            db.logger.warn("Unrouted error: " & $msg["error"])
+      elif msg.hasKey("result") and msg["result"].kind == JObject and
+           msg["result"].hasKey("action"):
+        db.dispatchNotification(msg)
+      elif msg.hasKey("error"):
+        db.logger.warn("Unrouted error: " & $msg["error"])
     except WSClosedError: db.ws.state = wsClosed; break
     except: db.ws.state = wsClosed; break
 
 proc send*(db: Db, rpcMethod: string, params: JsonNode, sessionId: UUID = UUID(""), txnId: UUID = UUID("")): Future[SurrealResult[JsonNode]] {.async.} =
   let id = genRequestId()
-  var reqParams = params.copy()
-  var req = %*{"id": id, "method": rpcMethod, "params": reqParams}
-  if string(sessionId).len > 0:
-    req["session"] = %*string(sessionId)
-  if string(txnId).len > 0:
-    req["txn"] = %*string(txnId)
+  var sid = string(sessionId)
+  var tid = string(txnId)
+  let wireData = db.codec.marshalRequest(id, rpcMethod, params, sid, tid)
+  let opcode = if db.codec.isCbor: wsBinary else: wsText
   var future = newFuture[SurrealResult[JsonNode]]("send")
   db.pending[id] = future
-  await db.ws.sendWs($req, wsText)
+  await db.ws.sendWs(wireData, opcode)
   return await future
 
-proc connect*(url: string, logger: Logger = nil): Future[Db] {.async.} =
+proc connect*(url: string, logger: Logger = nil, codec: Codec = nil): Future[Db] {.async.} =
   var address = url
   if not address.endsWith("/rpc"):
     address = address.strip(chars = {'/'}) & "/rpc"
   let client = await newWsClient(address)
   client.setupPings(15.0)
+  let c = if codec != nil: codec else: newJsonCodec()
   result = Db(
     ws: client,
     pending: newTable[string, PendingFuture](),
     liveQueries: newTable[string, LiveQueryHandler](),
-    logger: if logger != nil: logger else: newSilentLogger()
+    logger: if logger != nil: logger else: newSilentLogger(),
+    codec: c
   )
   asyncCheck result.listenLoop()
 

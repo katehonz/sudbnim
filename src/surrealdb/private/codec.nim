@@ -1,6 +1,6 @@
 ## Codec abstraction — allows switching between JSON and CBOR wire formats.
 import std/[json]
-import ./types, ./surrealcbor
+import ./surrealcbor
 
 type
   CodecKind* = enum
