@@ -31,7 +31,7 @@
 - HTTP client module (httpclient.nim)
 - 138 теста (58 unit + 33 mock + 6 typed + 30 CBOR + 11 type-aware CBOR)
 
-### ⚠️ Частично направено (Phase 5)
+### ✅ Phase 5: CBOR — ЗАВЪРШЕН
 - ✅ CBOR codec чрез cborious библиотека (surrealcbor.nim)
 - ✅ CBOR encode/decode за JsonNode (primitives, arrays, maps, null, bool, int, float, string)
 - ✅ SurrealDB CBOR tag константи (Tags 6-94)
@@ -91,7 +91,7 @@
 
 ---
 
-## Phase 5: CBOR поддръжка (НАПРЕДНАЛ)
+## Phase 5: CBOR поддръжка (ЗАВЪРШЕН)
 
 ### ✅ Готово
 - CBOR codec чрез `cborious` библиотека (surrealcbor.nim) — 632 реда
@@ -119,9 +119,6 @@
 - **CBOR params type-aware encoding**: Go ползва `interface{}` → CBOR marshaler кодира типове с тагове. Nim ползва `JsonNode` → marker-based подход. Сървърът приема и двата формата.
 - **HTTP backend**: WebSocket е стандартният транспорт за SurrealDB. HTTP добавя complexity без ясен benefit.
 
-### ❌ Оставащо за 100% паритет
-- Пълен паритет с Go driver edge cases
-
 ---
 
 ## Оценка на усилието
@@ -132,7 +129,7 @@
 | Phase 2: Session API | ✅ Завършен | — |
 | Phase 3: Typed wrappers | ✅ Завършен | — |
 | Phase 4: Query система | ✅ Завършен | — |
-| Phase 5: CBOR | ✅ Основна част | JSON-equiv CBOR, 30 теста, WS binary frames |
+| Phase 5: CBOR | ✅ Завършен | 41 теста, WS binary frames, type-aware encoding |
 
 ---
 

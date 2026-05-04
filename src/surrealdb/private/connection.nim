@@ -20,6 +20,7 @@ type
     token*: string
     logger*: Logger
     codec*: Codec
+    txId*: string
 
   Session* = ref object
     db*: Db
@@ -291,12 +292,18 @@ proc kill*(db: Db, liveId: UUID): Future[SurrealResult[JsonNode]] {.async.} =
 # Transactions (legacy, on Db directly)
 proc begin*(db: Db): Future[SurrealResult[JsonNode]] {.async.} =
   result = await db.send("begin", %[])
+  if result.isOk and result.ok.kind == JString:
+    db.txId = result.ok.getStr()
 
 proc commit*(db: Db): Future[SurrealResult[JsonNode]] {.async.} =
-  result = await db.send("commit", %[])
+  let params = if db.txId.len > 0: %*[db.txId] else: %[]
+  result = await db.send("commit", params)
+  if result.isOk: db.txId = ""
 
 proc cancel*(db: Db): Future[SurrealResult[JsonNode]] {.async.} =
-  result = await db.send("cancel", %[])
+  let params = if db.txId.len > 0: %*[db.txId] else: %[]
+  result = await db.send("cancel", params)
+  if result.isOk: db.txId = ""
 
 # Session & Interactive Transactions (SurrealDB v3+)
 proc attach*(db: Db): Future[SurrealResult[Session]] {.async.} =
