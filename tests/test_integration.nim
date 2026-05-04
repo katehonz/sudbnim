@@ -142,31 +142,51 @@ proc runTests() {.async.} =
     let r1 = await db.signin(TestUser, TestPass)
     check r1.isOk
 
-  # Transactions
+  # Transactions (via session — SurrealDB v3 requires sessions for transactions)
   block:
     echo "  Testing transactions..."
     discard await db.query("REMOVE TABLE IF EXISTS tx_test")
-    let b = await db.begin()
+    let sess = await db.attach()
+    if not sess.isOk:
+      echo "  attach failed: ", sess.error.code, " ", sess.error.message
+    check sess.isOk
+    let s = sess.ok
+
+    # Session needs its own auth and namespace/database
+    check (await s.use(TestNs, TestDb)).isOk
+    check (await s.signin(TestUser, TestPass)).isOk
+
+    let b = await s.begin()
     check b.isOk
-    let cr = await db.create("tx_test:1", %*{"val": 1})
+    let tx = b.ok
+    let cr = await tx.create("tx_test:1", %*{"val": 1})
+    if not cr.isOk:
+      echo "  tx create failed: ", cr.error.code, " ", cr.error.message
     check cr.isOk
-    let ca = await db.cancel()
+    let ca = await tx.cancel()
+    if not ca.isOk:
+      echo "  tx cancel failed: ", ca.error.code, " ", ca.error.message
     check ca.isOk
     let sel1 = await db.select("tx_test:1")
     # After cancel, record should not exist (or be null)
-    check sel1.isOk
-    # Note: depending on SurrealDB version, cancel may return null or error
+    check not sel1.isOk or sel1.ok.kind == JNull
 
-    let b2 = await db.begin()
+    let b2 = await s.begin()
     check b2.isOk
-    let cr2 = await db.create("tx_test:2", %*{"val": 2})
+    let tx2 = b2.ok
+    let cr2 = await tx2.create("tx_test:2", %*{"val": 2})
+    if not cr2.isOk:
+      echo "  tx2 create failed: ", cr2.error.code, " ", cr2.error.message
     check cr2.isOk
-    let co = await db.commit()
+    let co = await tx2.commit()
+    if not co.isOk:
+      echo "  tx2 commit failed: ", co.error.code, " ", co.error.message
     check co.isOk
     let sel2 = await db.select("tx_test:2")
     check sel2.isOk
     check sel2.ok["val"].getInt() == 2
     discard await db.query("REMOVE TABLE IF EXISTS tx_test")
+    discard await s.detach()
 
   # Live queries with notifications
   block:

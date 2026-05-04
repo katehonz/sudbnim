@@ -300,11 +300,9 @@ proc cancel*(db: Db): Future[SurrealResult[JsonNode]] {.async.} =
 
 # Session & Interactive Transactions (SurrealDB v3+)
 proc attach*(db: Db): Future[SurrealResult[Session]] {.async.} =
-  let res = await db.send("attach", %[])
+  let sessionId = newUuid()
+  let res = await db.send("attach", %[], sessionId = sessionId)
   if res.isOk:
-    var sessionId: UUID
-    if res.ok.kind == JString:
-      sessionId = UUID(res.ok.getStr())
     result = ok(Session(db: db, id: sessionId, closed: false))
   else:
     result = err[Session](res.error.code, res.error.message, res.error.serverError)
@@ -332,12 +330,12 @@ proc begin*(s: Session): Future[SurrealResult[Transaction]] {.async.} =
 proc commit*(tx: Transaction): Future[SurrealResult[JsonNode]] {.async.} =
   tx.requireOpen()
   tx.closed = true
-  result = await tx.db.send("commit", %[], sessionId = tx.sessionId, txnId = tx.id)
+  result = await tx.db.send("commit", %*[string(tx.id)], sessionId = tx.sessionId)
 
 proc cancel*(tx: Transaction): Future[SurrealResult[JsonNode]] {.async.} =
   tx.requireOpen()
   tx.closed = true
-  result = await tx.db.send("cancel", %[], sessionId = tx.sessionId, txnId = tx.id)
+  result = await tx.db.send("cancel", %*[string(tx.id)], sessionId = tx.sessionId)
 
 # Transaction delegates
 proc query*(tx: Transaction, sql: string, vars: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
