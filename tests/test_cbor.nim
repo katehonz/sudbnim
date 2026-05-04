@@ -1,5 +1,5 @@
-import std/[unittest, json, options, strutils, math]
-import surrealdb/private/[types, surrealcbor, codec]
+import std/[unittest, json, strutils, math]
+import surrealdb/private/[surrealcbor, codec]
 
 suite "CBOR Encoding/Decoding":
   test "null roundtrip":

@@ -503,6 +503,14 @@ proc kill*(s: Session, liveId: string): Future[SurrealResult[JsonNode]] {.async.
 proc kill*(s: Session, liveId: UUID): Future[SurrealResult[JsonNode]] {.async.} =
   result = await s.kill(string(liveId))
 
+proc onNotification*(s: Session, liveId: string, handler: LiveQueryHandler) =
+  ## Register a notification handler for a live query on this session.
+  s.db.liveQueries[liveId] = handler
+
+proc offNotification*(s: Session, liveId: string) =
+  ## Unregister a notification handler for a live query on this session.
+  s.db.liveQueries.del(liveId)
+
 proc signin*(s: Session, user, pass: string): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
   result = await s.db.send("signin", %*[{ "user": user, "pass": pass }], sessionId = s.id)

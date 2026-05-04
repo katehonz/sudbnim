@@ -1,4 +1,4 @@
-import std/[unittest, json, asyncdispatch, strutils]
+import std/[unittest, json, strutils]
 import surrealdb
 
 suite "CBOR Codec Integration":

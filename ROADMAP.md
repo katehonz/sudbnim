@@ -27,6 +27,7 @@
 - isRetriable/isQueryError helpers
 - ReconnectingDb: signinWithRefresh, signupWithRefresh, patch(RecordId)
 - Send[T] public generic RPC с method whitelist (13 метода)
+- Session live notifications: onNotification/offNotification
 - 127 теста (58 unit + 33 mock + 6 typed + 21 CBOR + 9 CBOR codec)
 
 ### ⚠️ Частично направено (Phase 5)
@@ -42,8 +43,7 @@
 - 🔲 Two-phase CBOR unmarshal за typed wrappers
 
 ### ❌ Оставащо (сравнено с Go драйвъра)
-- CBOR SurrealDB type encoding (RecordId → tag 8, UUID → tag 37 и т.н.)
-- LiveNotifications/CloseLiveNotifications на Session
+- CBOR SurrealDB type-aware encoding (RecordId → tag 8, UUID → tag 37)
 - HTTP connection backend (Nim е WebSocket-only)
 
 ---
