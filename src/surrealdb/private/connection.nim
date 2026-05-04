@@ -76,7 +76,7 @@ proc listenLoop*(db: Db) {.async.} =
           continue
         msg = db.codec.unmarshalResponse(data)
       of wsClose: db.ws.state = wsClosed; break
-      of wsPing: await db.ws.sendWs("", wsPong)
+      of wsPing: await db.ws.sendWs("", wsPong); continue
       else: continue
       if msg.hasKey("id") and msg["id"].kind == JString:
         let id = msg["id"].getStr()

@@ -260,6 +260,9 @@ proc relate*(c: HttpClient, source: string, relation: string, target: string,
   result = await c.query("RELATE " & source & "->" & relation & "->" & target &
                          (if content.kind != JNull: " CONTENT " & $content else: ""))
 
+proc insertRelation*(c: HttpClient, table: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  result = await c.query("INSERT RELATION INTO " & table & " " & $content)
+
 proc live*(c: HttpClient, table: string, diff: bool = false): Future[SurrealResult[JsonNode]] {.async.} =
   return err[JsonNode](-1, "Live queries are not supported via HTTP")
 

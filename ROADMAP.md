@@ -138,7 +138,7 @@
 
 ## Критерии за успех
 
-- ✅ Всички съществуващи тестове минават (86 теста)
-- ✅ Нови тестове за всеки Phase (Session auth, RecordId/DbTable overloads, SurrealString)
-- ❌ Документацията (`docs/*.md`) е актуализирана
+- ✅ Всички тестове минават (138 теста)
+- ✅ Нови тестове за всеки Phase (Session auth, RecordId/DbTable overloads, SurrealString, CBOR type-aware)
+- ✅ Документацията (`docs/*.md`) е актуализирана
 - ✅ API-то е backwards compatible (стар код работи без промени)
