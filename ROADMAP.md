@@ -26,15 +26,25 @@
 - queryRaw с error extraction за ERR statements
 - isRetriable/isQueryError helpers
 - ReconnectingDb: signinWithRefresh, signupWithRefresh, patch(RecordId)
-- 86 теста (50 unit + 33 mock + 3 typed)
+- 115 теста (58 unit + 33 mock + 3 typed + 21 CBOR)
+
+### ⚠️ Частично направено (Phase 5)
+- ✅ CBOR codec чрез cborious библиотека (surrealcbor.nim)
+- ✅ CBOR encode/decode за JsonNode (primitives, arrays, maps, null, bool, int, float, string)
+- ✅ SurrealDB CBOR tag константи (Tags 6-94)
+- ✅ Codec abstraction (JSON vs CBOR) — codec.nim
+- ✅ CBOR roundtrip тестове (21 теста)
+- 🔲 CBOR tag dispatch за SurrealDB типове (encode SurrealDB types → tagged CBOR)
+- 🔲 WebSocket binary frame integration (wsBinary opcode)
+- 🔲 Connection.nim CBOR mode integration
+- 🔲 Two-phase CBOR unmarshal за typed wrappers
 
 ### ❌ Оставащо (сравнено с Go драйвъра)
-- CBOR поддръжка (JSON-only) — Phase 5
+- CBOR SurrealDB type encoding (RecordId → tag 8, UUID → tag 37 и т.н.)
+- WebSocket binary frame integration
 - LiveNotifications/CloseLiveNotifications канал на Session (Nim ползва callbacks)
 - Send[T] public generic с method whitelist
 - HTTP connection backend (Nim е WebSocket-only)
-- Pluggable codec интерфейс (internal/codec pattern)
-- context.Context cancellation (Nim ползва async futures)
 
 ---
 
@@ -69,20 +79,24 @@
 
 ---
 
-## Phase 5: CBOR поддръжка (бъдещ milestone)
+## Phase 5: CBOR поддръжка (В ПРОГРЕС)
 
-Най-сложната фаза. Изисква:
-- Избор/интеграция на Nim CBOR библиотека
-- WebSocket binary frame поддръжка (wsBinary opcode)
-- CBOR tag система за SurrealDB типове (Tags 6-94)
-- MarshalCBOR/UnmarshalCBOR интерфейси
+### ✅ Завършено
+- CBOR codec чрез `cborious` библиотека (surrealcbor.nim)
+- JsonNode ↔ CBOR roundtrip (primitives, arrays, maps)
+- SurrealDB CBOR tag константи (Tags 6,7,8,9,10,12,13,14,15,37,49,50,51,88-94)
+- Tag encoding за SurrealDB типове (RecordId, Table, UUID, DateTime, Duration, Geometry и др.)
+- Tag decoding с dispatch по tag number
+- NONE (Tag 6) → null handling
+- Codec abstraction (JSON vs CBOR) — codec.nim
+- 21 CBOR теста
+
+### 🔲 Оставащо
+- WebSocket binary frame integration (wsBinary opcode в websocket.nim)
+- Connection.nim CBOR mode (автоматично използване на CBOR при `?codec=cbor`)
+- Two-phase CBOR unmarshal за typed wrappers
+- SurrealDB type → tagged CBOR encoding (RecordId → tag 8 и т.н.)
 - HTTP connection backend
-- Send[Result] и Call() generic методи
-
-**Препоръка**: Да се направи като отделен milestone, защото:
-1. CBOR в Nim екосистемата е по-слабо развита
-2. Phase 1-4 дават 90% от "feel"-а на Go драйвъра
-3. JSON-RPC е по-debuggable и достатъчен за повечето use cases
 
 ---
 
@@ -94,7 +108,7 @@
 | Phase 2: Session API | ✅ Завършен | — |
 | Phase 3: Typed wrappers | ✅ Завършен | — |
 | Phase 4: Query система | ✅ Завършен | — |
-| Phase 5: CBOR | ❌ Бъдещ | 2-3 седмици |
+| Phase 5: CBOR | ⚠️ В прогрес | ~50% готово, остава WS integration |
 
 ---
 

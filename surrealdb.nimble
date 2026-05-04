@@ -8,6 +8,7 @@ installDirs   = @["src/surrealdb"]
 
 # Dependencies
 requires "nim >= 2.0.0"
+requires "cborious >= 0.7.0"
 
 # Tasks
 task test, "Run all tests":
@@ -15,6 +16,7 @@ task test, "Run all tests":
     "test_unit.nim",
     "test_mock.nim",
     "test_typed.nim",
+    "test_cbor.nim",
     "test_integration.nim",
     "test_reconnect.nim",
   ]:
