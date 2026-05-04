@@ -7,16 +7,19 @@
 ```nim
 type RecordId* = object
   table*: string
-  id*: string
+  id*: JsonNode         # Supports string, int, array, object IDs
 
 # Constructors
-let rid1 = record("users", "123")     # From table + id
-let rid2 = record("users:abc:def")    # From string (parsed on first ':')
-let rid3 = rc"users:123"              # Compile-time literal macro
+let rid1 = record("users", "123")         # From table + string id
+let rid2 = record("users", %*[1, 2, 3])   # From table + complex id
+let rid3 = record("users:abc:def")        # From string (parsed on first ':')
+let rid4 = rc"users:123"                  # Compile-time literal macro
 
 # Methods
 echo $rid1                            # "users:123"
+echo $rid2                            # "users:[1,2,3]"
 echo %%rid1                           # JsonNode {"tb":"users","id":"123"}
+echo surrealString(rid1)              # "r'users:123'"
 assert rc"users:123" == rc"users:123"
 ```
 
@@ -79,6 +82,56 @@ type QueryResult*[T] = object
   result*: T                          # The actual data
   time*: string                       # Execution time
   error*: ServerError                 # Query-level error, if any
+```
+
+### QueryError
+
+Represents a query-level error (non-retriable).
+
+```nim
+type QueryError* = object
+  message*: string
+
+echo $qe   # "syntax error"
+```
+
+### Range Types
+
+SurrealDB range types for record IDs and queries.
+
+```nim
+type
+  BoundIncluded*[T] = object
+    value*: T
+
+  BoundExcluded*[T] = object
+    value*: T
+
+  Range*[T] = object
+    beginBound*: JsonNode
+    endBound*: JsonNode
+
+  RecordRangeID*[T] = object
+    table*: DbTable
+    rangeVal*: Range[T]
+
+# Usage
+let r = Range[int](
+  beginBound: %%BoundIncluded[int](value: 1),
+  endBound: %%BoundExcluded[int](value: 10)
+)
+let rr = RecordRangeID[int](table: tb"items", rangeVal: r)
+```
+
+### CustomNil / None
+
+Represents SurrealDB's `NONE` value.
+
+```nim
+type CustomNil* = object
+let None* = CustomNil()
+
+echo %%None   # null
 ```
 
 ### Retryer
@@ -486,3 +539,138 @@ Execute a SurrealDB function.
 discard await db.run("fn::myfunc")
 discard await db.run("fn::add", %*[10, 20])
 ```
+
+---
+
+## Session API (SurrealDB v3+)
+
+Sessions allow independent authentication, namespace selection, and variable scope on WebSocket connections.
+
+### Creating a Session
+
+```nim
+let s = (await db.attach()).ok
+```
+
+### Session Methods
+
+All CRUD methods (`query`, `select`, `create`, `update`, `upsert`, `merge`, `delete`, `insert`, `patch`, `run`) are available on `Session`.
+
+Additional session-scoped methods:
+
+#### `use`
+```nim
+proc use*(s: Session, ns, database: string): Future[SurrealResult[JsonNode]]
+```
+
+#### `setVar` / `unsetVar`
+```nim
+proc setVar*(s: Session, name: string, value: JsonNode): Future[SurrealResult[JsonNode]]
+proc unsetVar*(s: Session, name: string): Future[SurrealResult[JsonNode]]
+```
+
+#### `info`
+```nim
+proc info*(s: Session): Future[SurrealResult[JsonNode]]
+```
+
+#### `version`
+```nim
+proc version*(s: Session): Future[SurrealResult[JsonNode]]
+```
+
+#### `live` / `kill`
+```nim
+proc live*(s: Session, table: string, diff: bool = false): Future[SurrealResult[JsonNode]]
+proc kill*(s: Session, liveId: string): Future[SurrealResult[JsonNode]]
+```
+
+#### `detach`
+```nim
+proc detach*(s: Session): Future[SurrealResult[JsonNode]]
+```
+Closes the session. After detaching, the session cannot be used anymore.
+
+---
+
+## Typed Wrappers
+
+Import `surrealdb/typed` for generic wrappers that automatically unmarshal `JsonNode` results into Nim types.
+
+```nim
+import surrealdb
+import surrealdb/typed
+
+type Person = object
+  name: string
+  age: int
+
+# Query with typed results
+let res = await query[seq[Person]](db, "SELECT * FROM person")
+if res.isOk:
+  for qr in res.ok:
+    if qr.status == "OK":
+      echo qr.result[0].name
+
+# Create with typed result
+let created = await create[Person](db, "person", %*{"name": "Alice", "age": 30}, Person)
+if created.isOk:
+  echo created.ok.name
+
+# Select one record
+let person = await select[Person](db, rc"person:alice", Person)
+```
+
+Available typed wrappers for `Db`, `Session`, and `Transaction`:
+- `query*[T](db, sql, vars)` → `SurrealResult[seq[QueryResult[T]]]`
+- `create*[T](db, thing, content, typedesc[T])` → `SurrealResult[T]`
+- `select*[T](db, thing, typedesc[T])` → `SurrealResult[T]`
+- `update*[T](db, thing, content, typedesc[T])` → `SurrealResult[T]`
+- `upsert*[T](db, thing, content, typedesc[T])` → `SurrealResult[T]`
+- `merge*[T](db, thing, content, typedesc[T])` → `SurrealResult[T]`
+- `insert*[T](db, table, content, typedesc[T])` → `SurrealResult[seq[T]]]`
+- `delete*[T](db, thing, typedesc[T])` → `SurrealResult[T]`
+
+---
+
+## Query Composition
+
+### QueryStmt
+
+```nim
+type QueryStmt* = object
+  sql*: string
+  vars*: JsonNode
+  result*: QueryResult[JsonNode]
+```
+
+### `queryRaw`
+
+Compose multiple statements and execute them in a single RPC call:
+
+```nim
+var stmts = @[
+  QueryStmt(sql: "SELECT * FROM person WHERE age > $min", vars: %*{"min": 18}),
+  QueryStmt(sql: "SELECT COUNT() FROM person", vars: newJObject()),
+]
+let res = await db.queryRaw(stmts)
+if res.isOk:
+  for stmt in stmts:
+    echo stmt.result.status, " ", stmt.result.time
+```
+
+---
+
+## Error Helpers
+
+#### `isRetriable`
+```nim
+proc isRetriable*(err: RpcError): bool
+```
+Returns `true` if the error is potentially transient (network, timeout, server overload). Query-level errors (parse, invalid data) are non-retriable.
+
+#### `isQueryError`
+```nim
+proc isQueryError*(err: RpcError): bool
+```
+Returns `true` if this is a query-level error (syntax, type, or logic bug). These should **not** be retried.

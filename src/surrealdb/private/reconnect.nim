@@ -277,8 +277,23 @@ proc relate*(rdb: ReconnectingDb, source: string, relation: string, target: stri
 proc patch*(rdb: ReconnectingDb, thing: string, patches: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   if rdb.db != nil: result = await dbconn.patch(rdb.db, thing, patches)
 
+proc patch*(rdb: ReconnectingDb, thing: RecordId, patches: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  if rdb.db != nil: result = await dbconn.patch(rdb.db, $thing, patches)
+
 proc insertRelation*(rdb: ReconnectingDb, table: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   if rdb.db != nil: result = await dbconn.insertRelation(rdb.db, table, content)
+
+proc signinWithRefresh*(rdb: ReconnectingDb, authData: JsonNode): Future[SurrealResult[Tokens]] {.async.} =
+  if rdb.db != nil:
+    result = await dbconn.signinWithRefresh(rdb.db, authData)
+    if result.isOk:
+      rdb.token = result.ok.access
+
+proc signupWithRefresh*(rdb: ReconnectingDb, authData: JsonNode): Future[SurrealResult[Tokens]] {.async.} =
+  if rdb.db != nil:
+    result = await dbconn.signupWithRefresh(rdb.db, authData)
+    if result.isOk:
+      rdb.token = result.ok.access
 
 # Transactions
 proc begin*(rdb: ReconnectingDb): Future[SurrealResult[JsonNode]] =

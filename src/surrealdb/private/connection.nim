@@ -1,4 +1,4 @@
-import std/[json, asyncdispatch, tables, strutils, random]
+import std/[json, asyncdispatch, tables, strutils, random, jsonutils]
 import ./websocket, ./types
 
 export types
@@ -179,6 +179,31 @@ proc query*(db: Db, sql: string, vars: JsonNode = newJObject()): Future[SurrealR
 proc query*(db: Db, sql: SurQL, vars: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
   result = await db.query(string(sql), vars)
 
+proc queryRaw*(db: Db, queries: var seq[QueryStmt]): Future[SurrealResult[JsonNode]] {.async.} =
+  var sql = ""
+  var vars = newJObject()
+  for q in queries.mitems:
+    if sql.len > 0: sql.add(" ")
+    sql.add(q.sql)
+    sql.add(";")
+    for k, v in q.vars:
+      vars[k] = v
+  if sql.len == 0:
+    return err[JsonNode](-1, "no query to run")
+  let res = await db.query(sql, vars)
+  if not res.isOk:
+    return res
+  if res.ok.kind == JArray:
+    for i in 0..<min(queries.len, res.ok.len):
+      queries[i].result = jsonTo(res.ok[i], QueryResult[JsonNode])
+      if queries[i].result.status == "ERR" and queries[i].result.error == nil:
+        let raw = queries[i].result.result
+        if raw != nil and raw.kind == JObject:
+          queries[i].result.error = parseServerError(raw)
+        elif raw != nil and raw.kind == JString:
+          queries[i].result.error = ServerError(code: 0, message: raw.getStr(), kind: ekUnknown)
+  result = res
+
 proc select*(db: Db, thing: string): Future[SurrealResult[JsonNode]] {.async.} =
   result = await db.send("select", %*[thing])
 
@@ -313,6 +338,9 @@ proc query*(tx: Transaction, sql: string, vars: JsonNode = newJObject()): Future
   result = await tx.db.send("query", if vars.len > 0: %*[sql, vars] else: %*[sql],
                             sessionId = tx.sessionId, txnId = tx.id)
 
+proc query*(tx: Transaction, sql: SurQL, vars: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
+  result = await tx.query(string(sql), vars)
+
 proc select*(tx: Transaction, thing: string): Future[SurrealResult[JsonNode]] {.async.} =
   tx.requireOpen()
   result = await tx.db.send("select", %*[thing], sessionId = tx.sessionId, txnId = tx.id)
@@ -345,46 +373,203 @@ proc insert*(tx: Transaction, table: string, content: JsonNode): Future[SurrealR
   tx.requireOpen()
   result = await tx.db.send("insert", %*[table, content], sessionId = tx.sessionId, txnId = tx.id)
 
+proc relate*(tx: Transaction, source: string, relation: string, target: string,
+             content: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("relate", %*[source, relation, target, content], sessionId = tx.sessionId, txnId = tx.id)
+
+proc insertRelation*(tx: Transaction, table: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  tx.requireOpen()
+  result = await tx.db.send("insert_relation", %*[table, content], sessionId = tx.sessionId, txnId = tx.id)
+
 # Session delegates
 proc query*(s: Session, sql: string, vars: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
   result = await s.db.send("query", if vars.len > 0: %*[sql, vars] else: %*[sql], sessionId = s.id)
 
+proc query*(s: Session, sql: SurQL, vars: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
+  result = await s.query(string(sql), vars)
+
 proc select*(s: Session, thing: string): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
   result = await s.db.send("select", %*[thing], sessionId = s.id)
+
+proc select*(s: Session, thing: RecordId): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("select", %*[$thing], sessionId = s.id)
+
+proc select*(s: Session, thing: DbTable): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("select", %*[string(thing)], sessionId = s.id)
 
 proc create*(s: Session, thing: string, content: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
   result = await s.db.send("create", %*[thing, content], sessionId = s.id)
 
+proc create*(s: Session, thing: RecordId, content: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("create", %*[$thing, content], sessionId = s.id)
+
 proc update*(s: Session, thing: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
   result = await s.db.send("update", %*[thing, content], sessionId = s.id)
+
+proc update*(s: Session, thing: RecordId, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("update", %*[$thing, content], sessionId = s.id)
 
 proc merge*(s: Session, thing: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
   result = await s.db.send("merge", %*[thing, content], sessionId = s.id)
 
+proc merge*(s: Session, thing: RecordId, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("merge", %*[$thing, content], sessionId = s.id)
+
 proc delete*(s: Session, thing: string): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
   result = await s.db.send("delete", %*[thing], sessionId = s.id)
+
+proc delete*(s: Session, thing: RecordId): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("delete", %*[$thing], sessionId = s.id)
+
+proc delete*(s: Session, thing: DbTable): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("delete", %*[string(thing)], sessionId = s.id)
 
 proc insert*(s: Session, table: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
   result = await s.db.send("insert", %*[table, content], sessionId = s.id)
 
+proc insert*(s: Session, tbl: DbTable, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  result = await s.insert(string(tbl), content)
+
 proc upsert*(s: Session, thing: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
   result = await s.db.send("upsert", %*[thing, content], sessionId = s.id)
+
+proc upsert*(s: Session, thing: RecordId, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("upsert", %*[$thing, content], sessionId = s.id)
 
 proc patch*(s: Session, thing: string, patches: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
   result = await s.db.send("patch", %*[thing, patches], sessionId = s.id)
 
+proc patch*(s: Session, thing: RecordId, patches: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("patch", %*[$thing, patches], sessionId = s.id)
+
 proc run*(s: Session, fnName: string, args: JsonNode = %[]): Future[SurrealResult[JsonNode]] {.async.} =
   s.requireOpen()
   result = await s.db.send("run", %*[fnName, args], sessionId = s.id)
+
+proc use*(s: Session, ns, database: string): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("use", %*[ns, database], sessionId = s.id)
+
+proc setVar*(s: Session, name: string, value: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("let", %*[name, value], sessionId = s.id)
+
+proc unsetVar*(s: Session, name: string): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("unset", %*[name], sessionId = s.id)
+
+proc info*(s: Session): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("info", %[], sessionId = s.id)
+
+proc version*(s: Session): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.version()
+
+proc live*(s: Session, table: string, diff: bool = false): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("live", %*[table, diff], sessionId = s.id)
+
+proc kill*(s: Session, liveId: string): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("kill", %*[liveId], sessionId = s.id)
+
+proc kill*(s: Session, liveId: UUID): Future[SurrealResult[JsonNode]] {.async.} =
+  result = await s.kill(string(liveId))
+
+proc signin*(s: Session, user, pass: string): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("signin", %*[{ "user": user, "pass": pass }], sessionId = s.id)
+  if result.isOk and result.ok.kind == JString:
+    s.db.token = result.ok.getStr()
+
+proc signinNs*(s: Session, ns, user, pass: string): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("signin", %*[{ "ns": ns, "user": user, "pass": pass }], sessionId = s.id)
+
+proc signinDb*(s: Session, ns, database, user, pass: string): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("signin", %*[{ "ns": ns, "db": database, "user": user, "pass": pass }], sessionId = s.id)
+
+proc signinRecord*(s: Session, ns, database, access: string, params: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("signin", %*[{ "ns": ns, "db": database, "ac": access, "params": params }], sessionId = s.id)
+
+proc signup*(s: Session, ns, database, access: string, params: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("signup", %*[{ "ns": ns, "db": database, "ac": access, "params": params }], sessionId = s.id)
+  if result.isOk and result.ok.kind == JString:
+    s.db.token = result.ok.getStr()
+
+proc authenticate*(s: Session, token: string): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  s.db.token = token
+  result = await s.db.send("authenticate", %*[token], sessionId = s.id)
+
+proc invalidate*(s: Session): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  s.db.token = ""
+  result = await s.db.send("invalidate", %[], sessionId = s.id)
+
+proc signinWithRefresh*(s: Session, authData: JsonNode): Future[SurrealResult[Tokens]] {.async.} =
+  s.requireOpen()
+  if authData.kind == JObject:
+    var p = authData.copy()
+    p["refresh"] = %*true
+    let res = await s.db.send("signin", %*[p], sessionId = s.id)
+    if res.isOk:
+      result = ok(Tokens(
+        access: if res.ok.hasKey("access"): res.ok["access"].getStr() else: "",
+        refresh: if res.ok.hasKey("refresh"): res.ok["refresh"].getStr() else: ""
+      ))
+    else:
+      result = err[Tokens](res.error.code, res.error.message, res.error.serverError)
+  else:
+    result = err[Tokens](-1, "authData must be a JObject")
+
+proc signupWithRefresh*(s: Session, authData: JsonNode): Future[SurrealResult[Tokens]] {.async.} =
+  s.requireOpen()
+  if authData.kind == JObject:
+    var p = authData.copy()
+    p["refresh"] = %*true
+    let res = await s.db.send("signup", %*[p], sessionId = s.id)
+    if res.isOk:
+      result = ok(Tokens(
+        access: if res.ok.hasKey("access"): res.ok["access"].getStr() else: "",
+        refresh: if res.ok.hasKey("refresh"): res.ok["refresh"].getStr() else: ""
+      ))
+    else:
+      result = err[Tokens](res.error.code, res.error.message, res.error.serverError)
+  else:
+    result = err[Tokens](-1, "authData must be a JObject")
+
+proc relate*(s: Session, source: string, relation: string, target: string,
+             content: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("relate", %*[source, relation, target, content], sessionId = s.id)
+
+proc insertRelation*(s: Session, table: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  s.requireOpen()
+  result = await s.db.send("insert_relation", %*[table, content], sessionId = s.id)
 
 # Signin / Signup with Refresh (SurrealDB v3+)
 proc signinWithRefresh*(db: Db, authData: JsonNode): Future[SurrealResult[Tokens]] {.async.} =

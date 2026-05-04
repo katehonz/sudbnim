@@ -1,9 +1,9 @@
-import std/[json, tables, strutils, macros, random, sequtils, math, options]
+import std/[json, tables, strutils, macros, random, sequtils, math, options, jsonutils, unicode]
 
 type
   RecordId* = object
     table*: string
-    id*: string
+    id*: JsonNode
 
   DbTable* = distinct string
 
@@ -31,14 +31,28 @@ type
 
   GeometryPolygon* = seq[GeometryLine]
 
-  GeometryMultiPoint* = seq[GeometryPoint]
+  GeometryMultiPoint* = distinct seq[GeometryPoint]
 
-  GeometryMultiLine* = seq[GeometryLine]
+  GeometryMultiLine* = distinct seq[GeometryLine]
 
-  GeometryMultiPolygon* = seq[GeometryPolygon]
+  GeometryMultiPolygon* = distinct seq[GeometryPolygon]
 
   GeometryCollection* = object
     geometries*: JsonNode
+
+  BoundIncluded*[T] = object
+    value*: T
+
+  BoundExcluded*[T] = object
+    value*: T
+
+  Range*[T] = object
+    beginBound*: JsonNode
+    endBound*: JsonNode
+
+  RecordRangeID*[T] = object
+    table*: DbTable
+    rangeVal*: Range[T]
 
   Auth* = object
     namespace*: Option[string]
@@ -137,6 +151,14 @@ type
     time*: string
     error*: ServerError
 
+  QueryError* = object
+    message*: string
+
+  QueryStmt* = object
+    sql*: string
+    vars*: JsonNode
+    result*: QueryResult[JsonNode]
+
   NotificationAction* = enum
     naCreate = "CREATE"
     naUpdate = "UPDATE"
@@ -175,10 +197,14 @@ type
     onError*: proc(msg: string) {.gcsafe, closure.}
 
 type
+  CustomNil* = object
+
   ErrSessionClosed* = object of CatchableError
   ErrTransactionClosed* = object of CatchableError
   ErrNotConnected* = object of CatchableError
   ErrIDInUse* = object of CatchableError
+
+let None* = CustomNil()
 
 proc newErrSessionClosed*(): ref ErrSessionClosed =
   new(result); result.msg = "session already detached"
@@ -218,7 +244,37 @@ proc newConsoleLogger*(prefix = "[surrealdb]"): Logger =
 
 proc newSilentLogger*(): Logger = Logger()
 
-proc `$`*(rid: RecordId): string = rid.table & ":" & rid.id
+proc isAsciiAlphanumeric(ch: char): bool =
+  (ch >= 'a' and ch <= 'z') or (ch >= 'A' and ch <= 'Z') or (ch >= '0' and ch <= '9')
+
+proc needsIdEscaping(s: string): bool =
+  if s.len == 0: return false
+  var allDigitsOrUnderscore = true
+  for ch in s:
+    if ch != '_' and (ch < '0' or ch > '9'):
+      allDigitsOrUnderscore = false
+    if not isAsciiAlphanumeric(ch) and ch != '_':
+      return true
+  return allDigitsOrUnderscore
+
+proc escapeId(s: string): string =
+  const closeRune = Rune(0x27E9)  # ⟩
+  result.add(Rune(0x27E8))  # ⟨
+  for r in s.runes:
+    if r == closeRune or r == Rune('\\'):
+      result.add(Rune('\\'))
+    result.add(r)
+  result.add(closeRune)
+
+proc `$`*(rid: RecordId): string =
+  if rid.id.kind == JString:
+    let s = rid.id.getStr()
+    if needsIdEscaping(s):
+      rid.table & ":" & escapeId(s)
+    else:
+      rid.table & ":" & s
+  else:
+    rid.table & ":" & $rid.id
 proc `==`*(a, b: RecordId): bool = a.table == b.table and a.id == b.id
 proc `$`*(t: DbTable): string = string(t)
 proc `$`*(q: SurQL): string = string(q)
@@ -229,6 +285,92 @@ proc `$`*(dec: Decimal): string = string(dec)
 proc `$`*(f: SurFuture): string = string(f)
 proc `$`*(n: SurNone): string = string(n)
 proc `$`*(tbl: SurTable): string = string(tbl)
+proc `$`*(e: QueryError): string = e.message
+
+proc getResult*[T](qs: QueryStmt, _: typedesc[T]): T {.raises: [CatchableError].} =
+  ## Lazily unmarshal the query result into the target type T.
+  ## Raises if the query had an error or unmarshal fails.
+  if qs.result.status == "ERR":
+    if qs.result.error != nil:
+      raise newException(CatchableError, "query error: " & qs.result.error.message)
+    else:
+      raise newException(CatchableError, "query error (unknown)")
+  result = jsonTo(qs.result.result, T)
+
+proc hasResult*(qs: QueryStmt): bool =
+  ## Returns true if the query has a result (status is OK).
+  qs.result.status == "OK"
+
+proc getError*(qs: QueryStmt): ServerError =
+  ## Returns the error from the query result, or nil if no error.
+  qs.result.error
+
+proc isRetriable*(err: RpcError): bool =
+  ## Returns true if the error is potentially transient and the request may succeed on retry.
+  ## Query-level errors (parse, invalid data) are considered non-retriable.
+  if err.serverError != nil:
+    case err.serverError.kind
+    of ekParse, ekInvalidData:
+      return false
+    else:
+      discard
+  return true
+
+proc isQueryError*(err: RpcError): bool =
+  ## Returns true if this is a query-level error (syntax/type/logic error).
+  ## These errors should NOT be retried.
+  if err.serverError != nil:
+    case err.serverError.kind
+    of ekParse, ekInvalidData:
+      return true
+    else:
+      discard
+  return false
+
+proc surrealString*(rid: RecordId): string = "r'" & $rid & "'"
+proc surrealString*(dt: Datetime): string = "<datetime> '" & string(dt) & "'"
+proc surrealString*(f: SurFuture): string = "<future> { " & string(f) & " }"
+proc surrealString*(t: DbTable): string = string(t)
+proc surrealString*(u: UUID): string = string(u)
+proc surrealString*(d: Duration): string = string(d)
+proc surrealString*(dec: Decimal): string = string(dec)
+proc surrealString*(n: SurNone): string = "NONE"
+proc surrealString*(tbl: SurTable): string = "<table> " & string(tbl)
+proc surrealString*(gp: GeometryPoint): string =
+  "{'type': 'Point', 'coordinates': [" & $gp.longitude & ", " & $gp.latitude & "]}"
+proc surrealString*(gm: GeometryLine): string =
+  "{'type': 'LineString', 'coordinates': [" & gm.mapIt($it.longitude & ", " & $it.latitude).join("], [") & "]}"
+proc surrealString*(gp: GeometryPolygon): string =
+  "{'type': 'Polygon', 'coordinates': [[" & gp.mapIt(it.mapIt($it.longitude & ", " & $it.latitude).join(", ")).join("], [") & "]]}"
+proc surrealString*(gm: GeometryMultiPoint): string =
+  "{'type': 'MultiPoint', 'coordinates': [" & seq[GeometryPoint](gm).mapIt($it.longitude & ", " & $it.latitude).join("], [") & "]}"
+proc surrealString*(gm: GeometryMultiLine): string =
+  "{'type': 'MultiLineString', 'coordinates': [[" & seq[GeometryLine](gm).mapIt(it.mapIt($it.longitude & ", " & $it.latitude).join(", ")).join("], [") & "]]}"
+proc surrealString*(gm: GeometryMultiPolygon): string =
+  "{'type': 'MultiPolygon', 'coordinates': [[[" & seq[GeometryPolygon](gm).mapIt(it.mapIt(it.mapIt($it.longitude & ", " & $it.latitude).join(", ")).join("], [")).join("]], [[") & "]]]}"
+proc surrealString*(gc: GeometryCollection): string = $gc.geometries
+proc surrealString*[T](bi: BoundIncluded[T]): string = $bi.value & "..="
+proc surrealString*[T](be: BoundExcluded[T]): string = $be.value & "..<"
+proc surrealString*[T](r: Range[T]): string = $r.beginBound & ".." & $r.endBound
+proc surrealString*[T](rr: RecordRangeID[T]): string = $rr.table & ":" & surrealString(rr.rangeVal)
+proc surrealString*(pd: PatchData): string = pd.op & " " & pd.path & " " & $pd.value
+proc surrealString*(tokens: Tokens): string =
+  let aLen = min(tokens.access.len, 6)
+  let rLen = min(tokens.refresh.len, 6)
+  "Tokens(access: " & tokens.access[0..<aLen] & "..., refresh: " & tokens.refresh[0..<rLen] & "...)"
+proc surrealString*(a: Auth): string =
+  var parts: seq[string]
+  if a.namespace.isSome: parts.add("ns: " & a.namespace.get)
+  if a.database.isSome: parts.add("db: " & a.database.get)
+  if a.scope.isSome: parts.add("sc: " & a.scope.get)
+  if a.access.isSome: parts.add("ac: " & a.access.get)
+  if a.username.isSome: parts.add("user: " & a.username.get)
+  "Auth(" & parts.join(", ") & ")"
+proc surrealString*(rel: Relationship): string =
+  var idStr = ""
+  if rel.id.isSome: idStr = $rel.id.get & " "
+  idStr & $rel.inRec & " -> " & $rel.relation & " -> " & $rel.outRec
+
 proc `%%`*(rid: RecordId): JsonNode = %*{"tb": rid.table, "id": rid.id}
 proc `%%`*(dt: Datetime): JsonNode = %*string(dt)
 proc `%%`*(d: Duration): JsonNode = %*string(d)
@@ -242,6 +384,14 @@ proc `%%`*(gm: GeometryLine): JsonNode =
   %*{"type": "LineString", "coordinates": gm.mapIt([it.longitude, it.latitude])}
 proc `%%`*(gp: GeometryPolygon): JsonNode =
   %*{"type": "Polygon", "coordinates": gp.mapIt(it.mapIt([it.longitude, it.latitude]))}
+proc `%%`*(gm: GeometryMultiPoint): JsonNode =
+  %*{"type": "MultiPoint", "coordinates": seq[GeometryPoint](gm).mapIt([it.longitude, it.latitude])}
+proc `%%`*(gm: GeometryMultiLine): JsonNode =
+  %*{"type": "MultiLineString", "coordinates": seq[GeometryLine](gm).mapIt(it.mapIt([it.longitude, it.latitude]))}
+proc `%%`*(gm: GeometryMultiPolygon): JsonNode =
+  %*{"type": "MultiPolygon", "coordinates": seq[GeometryPolygon](gm).mapIt(it.mapIt(it.mapIt([it.longitude, it.latitude])))}
+proc `%%`*(gc: GeometryCollection): JsonNode =
+  %*{"type": "GeometryCollection", "geometries": gc.geometries}
 proc `%%`*(a: Auth): JsonNode =
   result = newJObject()
   if a.namespace.isSome: result["NS"] = %*a.namespace.get
@@ -259,6 +409,13 @@ proc `%%`*(rel: Relationship): JsonNode =
   result["out"] = %*rel.outRec
   result["relation"] = %*($rel.relation)
   if rel.data.len > 0: result["data"] = rel.data
+proc `%%`*(bi: BoundIncluded): JsonNode = %*{"incl": bi.value}
+proc `%%`*(be: BoundExcluded): JsonNode = %*{"excl": be.value}
+proc `%%`*[T](r: Range[T]): JsonNode =
+  %*{"begin": r.beginBound, "end": r.endBound}
+proc `%%`*[T](rr: RecordRangeID[T]): JsonNode =
+  %*{"table": $rr.table, "range": %%rr.rangeVal}
+proc `%%`*(cn: CustomNil): JsonNode = newJNull()
 
 proc ok*[T](val: T): SurrealResult[T] = SurrealResult[T](isOk: true, ok: val)
 proc err*[T](code: int, msg: string): SurrealResult[T] =
@@ -266,12 +423,13 @@ proc err*[T](code: int, msg: string): SurrealResult[T] =
 proc err*[T](code: int, msg: string, serverErr: ServerError): SurrealResult[T] =
   SurrealResult[T](isOk: false, error: RpcError(code: code, message: msg, serverError: serverErr))
 
-proc record*(table, id: string): RecordId = RecordId(table: table, id: id)
+proc record*(table, id: string): RecordId = RecordId(table: table, id: %*id)
+proc record*(table: string, id: JsonNode): RecordId = RecordId(table: table, id: id)
 proc record*(s: string): RecordId =
   let parts = s.split(":", 1)
   if parts.len != 2:
     raise newException(ValueError, "Invalid RecordId: " & s)
-  RecordId(table: parts[0], id: parts[1])
+  RecordId(table: parts[0], id: %*parts[1])
 
 proc dbTable*(s: string): DbTable = DbTable(s)
 proc newUuid*(): UUID =
@@ -287,7 +445,7 @@ macro `rc`*(s: static string): RecordId =
     error "Invalid RecordId: " & s
   result = newTree(nnkObjConstr, ident"RecordId")
   result.add newTree(nnkExprColonExpr, ident"table", newLit(parts[0]))
-  result.add newTree(nnkExprColonExpr, ident"id", newLit(parts[1]))
+  result.add newTree(nnkExprColonExpr, ident"id", newTree(nnkPrefix, ident"%*", newLit(parts[1])))
 
 macro `tb`*(s: static string): DbTable =
   quote do: DbTable(`s`)
@@ -339,6 +497,24 @@ proc parseErrorKind*(s: string): ErrorKind =
   of "Connection": ekConnection
   of "LiveKilled": ekLiveKilled
   else: ekUnknown
+
+proc parseVersionData*(node: JsonNode): VersionData =
+  ## Parses version response. Handles both map {version, build, timestamp} and plain string.
+  if node.isNil or node.kind == JNull:
+    return VersionData(version: "unknown")
+  if node.kind == JObject:
+    result.version = if node.hasKey("version") and node["version"].kind == JString: node["version"].getStr() else: ""
+    result.build = if node.hasKey("build") and node["build"].kind == JString: node["build"].getStr() else: ""
+    result.timestamp = if node.hasKey("timestamp") and node["timestamp"].kind == JString: node["timestamp"].getStr() else: ""
+  elif node.kind == JString:
+    let s = node.getStr()
+    result.version = if s.startsWith("surrealdb-"): s[10..^1] else: s
+    result.build = ""
+    result.timestamp = ""
+  else:
+    result.version = $node
+    result.build = ""
+    result.timestamp = ""
 
 proc parseServerError*(node: JsonNode): ServerError =
   if node.isNil or node.kind != JObject:

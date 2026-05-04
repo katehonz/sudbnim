@@ -126,6 +126,10 @@ proc handleMockClient(client: MockClient) {.async.} =
             response = %*{"id": id, "result": 42}
           of "authenticate", "invalidate", "signup":
             response = %*{"id": id, "result": newJNull()}
+          of "attach":
+            response = %*{"id": id, "result": "session-uuid-001"}
+          of "detach":
+            response = %*{"id": id, "result": newJNull()}
           else:
             response = %*{"id": id, "error": {"code": -32601, "message": "Method not found: " & meth}}
           await sendWsFrame(client.socket, $response)
@@ -425,3 +429,114 @@ suite "Mock ReconnectingDb":
     check gotNotif
 
     rdb.disconnect()
+
+suite "Session Auth & Delegates":
+  test "Session signin":
+    var mock = newMockSurrealDB()
+    defer: mock.stop()
+    let db = waitFor connect("ws://127.0.0.1:" & $mock.port)
+    let sessRes = waitFor db.attach()
+    check sessRes.isOk
+    let s = sessRes.ok
+    let r = waitFor s.signin("root", "root")
+    check r.isOk
+    check r.ok.getStr() == "mock-token-12345"
+    check db.token == "mock-token-12345"
+    discard waitFor s.detach()
+    db.disconnect()
+
+  test "Session authenticate and invalidate":
+    var mock = newMockSurrealDB()
+    defer: mock.stop()
+    let db = waitFor connect("ws://127.0.0.1:" & $mock.port)
+    let sessRes = waitFor db.attach()
+    check sessRes.isOk
+    let s = sessRes.ok
+    check (waitFor s.authenticate("tok")).isOk
+    check db.token == "tok"
+    check (waitFor s.invalidate()).isOk
+    check db.token == ""
+    discard waitFor s.detach()
+    db.disconnect()
+
+  test "Session relate":
+    var mock = newMockSurrealDB()
+    defer: mock.stop()
+    let db = waitFor connect("ws://127.0.0.1:" & $mock.port)
+    let sessRes = waitFor db.attach()
+    check sessRes.isOk
+    let s = sessRes.ok
+    let r = waitFor s.relate("user:alice", "likes", "user:bob")
+    check r.isOk
+    discard waitFor s.detach()
+    db.disconnect()
+
+  test "Session insertRelation":
+    var mock = newMockSurrealDB()
+    defer: mock.stop()
+    let db = waitFor connect("ws://127.0.0.1:" & $mock.port)
+    let sessRes = waitFor db.attach()
+    check sessRes.isOk
+    let s = sessRes.ok
+    let r = waitFor s.insertRelation("likes", %*{"in": "user:alice", "out": "user:bob"})
+    check r.isOk
+    discard waitFor s.detach()
+    db.disconnect()
+
+  test "Session select RecordId and DbTable":
+    var mock = newMockSurrealDB()
+    defer: mock.stop()
+    let db = waitFor connect("ws://127.0.0.1:" & $mock.port)
+    let sessRes = waitFor db.attach()
+    check sessRes.isOk
+    let s = sessRes.ok
+    let r1 = waitFor s.select(rc"user:alice")
+    check r1.isOk
+    let r2 = waitFor s.select(tb"user")
+    check r2.isOk
+    discard waitFor s.detach()
+    db.disconnect()
+
+  test "Session create RecordId":
+    var mock = newMockSurrealDB()
+    defer: mock.stop()
+    let db = waitFor connect("ws://127.0.0.1:" & $mock.port)
+    let sessRes = waitFor db.attach()
+    check sessRes.isOk
+    let s = sessRes.ok
+    let r = waitFor s.create(rc"user:alice", %*{"name": "Alice"})
+    check r.isOk
+    discard waitFor s.detach()
+    db.disconnect()
+
+  test "Transaction relate":
+    var mock = newMockSurrealDB()
+    defer: mock.stop()
+    let db = waitFor connect("ws://127.0.0.1:" & $mock.port)
+    let sessRes = waitFor db.attach()
+    check sessRes.isOk
+    let s = sessRes.ok
+    let txRes = waitFor s.begin()
+    check txRes.isOk
+    let tx = txRes.ok
+    let r = waitFor tx.relate("user:alice", "likes", "user:bob")
+    check r.isOk
+    discard waitFor tx.commit()
+    discard waitFor s.detach()
+    db.disconnect()
+
+  test "Transaction insertRelation":
+    var mock = newMockSurrealDB()
+    defer: mock.stop()
+    let db = waitFor connect("ws://127.0.0.1:" & $mock.port)
+    let sessRes = waitFor db.attach()
+    check sessRes.isOk
+    let s = sessRes.ok
+    let txRes = waitFor s.begin()
+    check txRes.isOk
+    let tx = txRes.ok
+    let r = waitFor tx.insertRelation("likes", %*{"in": "user:alice", "out": "user:bob"})
+    check r.isOk
+    discard waitFor tx.commit()
+    discard waitFor s.detach()
+    db.disconnect()

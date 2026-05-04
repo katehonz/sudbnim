@@ -122,7 +122,7 @@ waitFor main()
 
 ### Authentication
 
-| Method | Parameters |
+| Method | Description |
 |---|---|
 | `db.signin(user, pass)` | Root credentials |
 | `db.signinNs(ns, user, pass)` | Namespace credentials |
@@ -132,6 +132,11 @@ waitFor main()
 | `db.authenticate(token)` | JWT token |
 | `db.invalidate()` | Invalidate session |
 | `db.info()` | Current user info |
+| `db.signinWithRefresh(authData)` | Sign in with refresh token |
+| `db.signupWithRefresh(authData)` | Sign up with refresh token |
+
+All auth methods are also available on `Session`:
+`s.signin(...)`, `s.signup(...)`, `s.authenticate(...)`, `s.invalidate()`, `s.signinWithRefresh(...)`, `s.signupWithRefresh(...)`
 
 ### CRUD Operations
 
@@ -176,6 +181,37 @@ waitFor main()
 | `db.begin()` | Start a transaction |
 | `db.commit()` | Commit a transaction |
 | `db.cancel()` | Rollback a transaction |
+
+### Sessions (SurrealDB v3+)
+
+```nim
+let sess = await db.attach()
+let s = sess.ok
+discard await s.use("ns", "db")
+discard await s.signin("root", "root")
+let result = await s.select(rc"user:alice")
+discard await s.detach()
+```
+
+Session supports all CRUD operations, auth, variables, queries, live queries, and transactions (via `s.begin()`).
+
+### Typed Wrappers
+
+Import `surrealdb/typed` for compile-time typed results:
+
+```nim
+import surrealdb/typed
+
+type Person = object
+  name: string
+  age: int
+
+let people = await db.query[Person]("SELECT * FROM person")
+let created = await db.create[Person]("person", %*{"name": "Alice", "age": 30}, Person)
+let selected = await db.select[Person](rc"person:alice", Person)
+```
+
+Available typed operations: `query[T]`, `create[T]`, `select[T]`, `update[T]`, `upsert[T]`, `merge[T]`, `insert[T]`, `delete[T]`, `patch[T]`, `relate[T]`, `insertRelation[T]` — all work with `Db`, `Session`, and `Transaction`, with `RecordId`/`DbTable` overloads.
 
 ### Variables & Functions
 
@@ -269,10 +305,11 @@ nim c -r --hints:off --path:src tests/test_reconnect.nim
 ```
 src/surrealdb/
 ├── surrealdb.nim                    # Public API surface
+├── typed.nim                        # Typed generic wrappers (query[T], create[T], etc.)
 └── private/
     ├── types.nim                    # All types: RecordId, Db, Result, Retryer, etc.
     ├── websocket.nim                # Zero-dependency WebSocket client (RFC 6455)
-    ├── connection.nim               # Db type + all 28 RPC methods
+    ├── connection.nim               # Db + Session + Transaction + all RPC methods
     └── reconnect.nim               # ReconnectingDb with retry + session restore
 ```
 
@@ -286,4 +323,3 @@ src/surrealdb/
 ## License
 
 MIT — see [LICENSE](LICENSE)
-# sudbnim

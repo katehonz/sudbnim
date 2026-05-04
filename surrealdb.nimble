@@ -14,6 +14,7 @@ task test, "Run all tests":
   for file in [
     "test_unit.nim",
     "test_mock.nim",
+    "test_typed.nim",
     "test_integration.nim",
     "test_reconnect.nim",
   ]:
