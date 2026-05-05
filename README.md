@@ -28,7 +28,7 @@ nimble install surrealdb
 Or add to your `.nimble` file:
 
 ```nim
-requires "surrealdb >= 0.3.0"
+requires "surrealdb >= 0.4.0"
 ```
 
 ## Quick Start

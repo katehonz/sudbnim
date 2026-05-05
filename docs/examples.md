@@ -355,3 +355,188 @@ proc main() {.async.} =
 
 waitFor main()
 ```
+
+## Typed Wrappers
+
+```nim
+import std/[json, asyncdispatch]
+import surrealdb
+import surrealdb/typed
+
+type Person = object
+  name: string
+  age: int
+
+proc main() {.async.} =
+  let db = await connect("ws://localhost:8000")
+  defer: db.disconnect()
+  discard await db.use("test", "test")
+  discard await db.signin("root", "root")
+  discard await db.query("REMOVE TABLE IF EXISTS person")
+
+  # Create with typed result
+  let created = await db.create("person", %*{"name": "Alice", "age": 30}, Person)
+  if created.isOk:
+    echo "Created: ", created.ok.name
+
+  # Select with typed result
+  let selected = await db.select("person:alice", Person)
+  if selected.isOk:
+    echo "Selected: ", selected.ok.name, " ", selected.ok.age
+
+  # Query with typed results
+  let all = await query[seq[QueryResult[Person]]](db, "SELECT * FROM person")
+  if all.isOk:
+    for qr in all.ok:
+      if qr.status == "OK" and qr.result.len > 0:
+        echo qr.result[0].name
+
+waitFor main()
+```
+
+## Sessions (SurrealDB v3+)
+
+```nim
+import std/[json, asyncdispatch]
+import surrealdb
+
+proc main() {.async.} =
+  let db = await connect("ws://localhost:8000")
+  defer: db.disconnect()
+  discard await db.use("test", "test")
+  discard await db.signin("root", "root")
+
+  # Create a new session
+  let sres = await db.attach()
+  if not sres.isOk:
+    echo "Failed to attach: ", sres.error.message
+    return
+  let s = sres.ok
+
+  # Session starts unauthenticated — sign in again
+  discard await s.signin("root", "root")
+  discard await s.use("test", "test")
+
+  # Session-scoped variable
+  discard await s.setVar("min_age", %*18)
+
+  # Query using session
+  let r = await s.query("SELECT * FROM person WHERE age > $min_age")
+  echo r.ok[0]["result"].len
+
+  # Session can have its own transactions
+  let txres = await s.begin()
+  if txres.isOk:
+    let tx = txres.ok
+    discard await tx.create("person:session_test", %*{"name": "Session"})
+    discard await tx.commit()
+
+  # Detach when done
+  discard await s.detach()
+
+waitFor main()
+```
+
+## Query Composition with QueryStmt
+
+```nim
+import std/[json, asyncdispatch]
+import surrealdb
+
+proc main() {.async.} =
+  let db = await connect("ws://localhost:8000")
+  defer: db.disconnect()
+  discard await db.use("test", "test")
+  discard await db.signin("root", "root")
+
+  var queries = @[
+    QueryStmt(sql: "SELECT * FROM person WHERE age > $min", vars: %*{"min": 21}),
+    QueryStmt(sql: "SELECT count() FROM person GROUP ALL", vars: newJObject()),
+  ]
+
+  let res = await db.queryRaw(queries)
+  if res.isOk:
+    for q in queries:
+      echo q.sql, " -> ", q.result.status, " ", q.result.time
+
+waitFor main()
+```
+
+## HTTP Client (Alternative Transport)
+
+```nim
+import std/[json, asyncdispatch]
+import surrealdb
+
+proc main() {.async.} =
+  # HTTP transport — no WebSocket needed
+  let http = newHttpClient("http://localhost:8000")
+  defer: http.close()
+
+  # Note: use() is synchronous for HTTP
+  http.use("test", "test")
+  discard await http.signin("root", "root")
+
+  # CRUD operations work the same
+  discard await http.create("user:http_test", %*{"name": "HTTP User"})
+  let r = await http.select("user:http_test")
+  echo r.ok
+
+  # Limitations: no live queries, sessions, transactions, or run()
+
+waitFor main()
+```
+
+## Complex RecordId
+
+```nim
+import std/[json, asyncdispatch]
+import surrealdb
+
+proc main() {.async.} =
+  let db = await connect("ws://localhost:8000")
+  defer: db.disconnect()
+  discard await db.use("test", "test")
+  discard await db.signin("root", "root")
+
+  # RecordId with array ID
+  let arrId = record("item", %*[1, 2, 3])
+  echo $arrId  # "item:[1,2,3]"
+  discard await db.create(arrId, %*{"name": "Array ID Item"})
+
+  # RecordId with object ID
+  let objId = record("doc", %*{"org": "acme", "dept": "eng"})
+  echo $objId  # 'doc:{"org":"acme","dept":"eng"}'
+
+  # SurrealString for queries
+  echo surrealString(arrId)  # "r'item:[1,2,3]'"
+
+waitFor main()
+```
+
+## Error Handling with isRetriable
+
+```nim
+import std/[json, asyncdispatch]
+import surrealdb
+
+proc main() {.async.} =
+  let db = await connect("ws://localhost:8000")
+  defer: db.disconnect()
+  discard await db.use("test", "test")
+  discard await db.signin("root", "root")
+
+  let r = await db.query("SELECT * FROM nonexistent_table")
+  if not r.isOk:
+    echo "Error: ", r.error.message
+    if r.error.serverError != nil:
+      echo "Kind: ", r.error.serverError.kind
+
+    # Check if we should retry
+    if r.error.isRetriable:
+      echo "This error might be transient — you can retry."
+    else:
+      echo "This is a permanent error — do not retry."
+
+waitFor main()
+```

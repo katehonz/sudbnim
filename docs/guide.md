@@ -239,3 +239,94 @@ Common error codes:
 - See [API Reference](api.md) for the complete method listing
 - See [Reconnecting Connection](reconnect.md) for production-ready connection management
 - See [Examples](examples.md) for more complex usage patterns
+
+## Typed Wrappers
+
+For automatic unmarshaling into Nim types, import `surrealdb/typed`:
+
+```nim
+import surrealdb/typed
+
+type Person = object
+  name: string
+  age: int
+
+let created = await db.create("person", %*{"name": "Alice", "age": 30}, Person)
+if created.isOk:
+  echo created.ok.name  # "Alice"
+
+let all = await query[seq[QueryResult[Person]]](db, "SELECT * FROM person")
+```
+
+Note: typed wrappers require explicit type parameters. The `query[T]` wrapper lives in the `typed` module and may need the module prefix to disambiguate from the base `query` proc.
+
+## Sessions (SurrealDB v3+)
+
+Sessions provide independent authentication and scope on WebSocket connections:
+
+```nim
+let sres = await db.attach()
+let s = sres.ok
+
+discard await s.signin("root", "root")
+discard await s.use("test", "test")
+
+let r = await s.query("SELECT * FROM person")
+discard await s.detach()
+```
+
+Sessions support all CRUD operations, variables, live queries, and transactions (`s.begin()` → `tx.commit()`).
+
+## Query Composition
+
+Batch multiple statements with `QueryStmt` and `queryRaw`:
+
+```nim
+var queries = @[
+  QueryStmt(sql: "SELECT * FROM person WHERE age > $min", vars: %*{"min": 18}),
+  QueryStmt(sql: "SELECT count() FROM person GROUP ALL", vars: newJObject()),
+]
+let res = await db.queryRaw(queries)
+for q in queries:
+  echo q.result.status, " ", q.result.time
+```
+
+## HTTP Transport
+
+For environments where WebSocket is not available:
+
+```nim
+let http = newHttpClient("http://localhost:8000")
+defer: http.close()
+
+http.use("test", "test")
+discard await http.signin("root", "root")
+discard await http.create("user:alice", %*{"name": "Alice"})
+```
+
+**Limitations:** Live queries, sessions, transactions, and `run()` are not supported over HTTP.
+
+## Complex RecordIds
+
+RecordIds can have array or object identifiers:
+
+```nim
+let arrId = record("item", %*[1, 2, 3])
+let objId = record("doc", %*{"org": "acme", "dept": "eng"})
+
+echo $arrId              # "item:[1,2,3]"
+echo surrealString(arrId) # "r'item:[1,2,3]'"
+```
+
+## Error Helpers
+
+Use `isRetriable` and `isQueryError` to decide whether to retry:
+
+```nim
+let r = await db.query("SELECT * FROM missing_table")
+if not r.isOk:
+  if r.error.isQueryError:
+    echo "Fix your query — do not retry."
+  elif r.error.isRetriable:
+    echo "Network issue — retry is safe."
+```

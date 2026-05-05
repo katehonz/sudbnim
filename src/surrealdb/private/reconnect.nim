@@ -193,6 +193,12 @@ proc signinDb*(rdb: ReconnectingDb, ns, database, user, pass: string): Future[Su
     if result.isOk and result.ok.kind == JString:
       rdb.token = result.ok.getStr()
 
+proc signinRecord*(rdb: ReconnectingDb, ns, database, access: string, params: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  if rdb.db != nil:
+    result = await dbconn.signinRecord(rdb.db, ns, database, access, params)
+    if result.isOk and result.ok.kind == JString:
+      rdb.token = result.ok.getStr()
+
 proc query*(rdb: ReconnectingDb, sql: string, vars: JsonNode = newJObject()): Future[SurrealResult[JsonNode]] {.async.} =
   if rdb.db != nil: result = await dbconn.query(rdb.db, sql, vars)
 
@@ -217,6 +223,9 @@ proc create*(rdb: ReconnectingDb, thing: RecordId, content: JsonNode = newJObjec
 proc insert*(rdb: ReconnectingDb, table: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   if rdb.db != nil: result = await dbconn.insert(rdb.db, table, content)
 
+proc insert*(rdb: ReconnectingDb, tbl: DbTable, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  if rdb.db != nil: result = await dbconn.insert(rdb.db, tbl, content)
+
 proc update*(rdb: ReconnectingDb, thing: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   if rdb.db != nil: result = await dbconn.update(rdb.db, thing, content)
 
@@ -224,6 +233,9 @@ proc update*(rdb: ReconnectingDb, thing: RecordId, content: JsonNode): Future[Su
   if rdb.db != nil: result = await dbconn.update(rdb.db, thing, content)
 
 proc upsert*(rdb: ReconnectingDb, thing: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
+  if rdb.db != nil: result = await dbconn.upsert(rdb.db, thing, content)
+
+proc upsert*(rdb: ReconnectingDb, thing: RecordId, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =
   if rdb.db != nil: result = await dbconn.upsert(rdb.db, thing, content)
 
 proc merge*(rdb: ReconnectingDb, thing: string, content: JsonNode): Future[SurrealResult[JsonNode]] {.async.} =

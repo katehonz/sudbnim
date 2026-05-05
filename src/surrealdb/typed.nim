@@ -3,7 +3,7 @@ import surrealdb/private/[types, connection]
 
 export types, connection
 
-proc toQueryResult*[T](raw: QueryResult[JsonNode]): QueryResult[T] {.raises: [CatchableError].} =
+proc toQueryResult*[T](raw: QueryResult[JsonNode]): QueryResult[T] =
   result.status = raw.status
   result.time = raw.time
   if raw.status == "ERR":
